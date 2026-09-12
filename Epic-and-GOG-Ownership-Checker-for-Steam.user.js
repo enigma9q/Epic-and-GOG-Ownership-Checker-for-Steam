@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Epic and GOG Ownership Checker for Steam
 // @namespace    https://steam-multi-ownership.local/
-// @version      3.5
+// @version      4.0
 // @author       Theodoros OhYeah (enigma9q), ChatGPT & Antigravity
 // @description  Shows Epic and GOG ownership on Steam game pages, search results, library cards, similar games and recommendation cards
 // @match        https://store.steampowered.com/*
