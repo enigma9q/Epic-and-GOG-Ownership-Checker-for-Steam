@@ -777,9 +777,9 @@
         // 1. Dropdown Arrow Button before "Owned:"
         const arrowBtn = document.createElement('button');
         arrowBtn.type = 'button';
-        arrowBtn.title = 'Update stores database';
+        arrowBtn.title = 'Sync databases & view sync timestamps';
         arrowBtn.innerHTML = `
-            <svg width="10" height="10" viewBox="0 0 12 12" fill="none" style="display:block;">
+            <svg width="9" height="9" viewBox="0 0 12 12" fill="none" style="display:block;">
                 <path d="M2.5 4.5L6 8L9.5 4.5" stroke="#79a8d8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
         `;
@@ -790,12 +790,12 @@
             background: rgba(255, 255, 255, 0.06);
             border: 1px solid rgba(255, 255, 255, 0.15);
             border-radius: 3px;
-            padding: 2px 4px;
+            padding: 0;
             cursor: pointer;
             height: 18px;
             width: 18px;
             box-sizing: border-box;
-            transition: all 0.15s ease;
+            transition: background 0.15s ease, border-color 0.15s ease;
         `;
 
         arrowBtn.addEventListener('mouseenter', function () {
@@ -898,7 +898,7 @@
         const label = document.createElement('span');
         label.textContent = 'Owned:';
         label.style.cssText = `
-            font-weight: bold;
+            font-weight: 700;
             font-size: 11px;
             color: #8f98a0;
             margin-right: 2px;
@@ -907,20 +907,6 @@
         `;
         container.appendChild(label);
 
-        // SVG Logos
-        const epicSvg = `
-            <svg width="14" height="14" viewBox="0 0 32 32" fill="none" style="display:block;">
-                <path d="M16 2L3 7v13l13 10 13-10V7L16 2z" fill="#1b2838" stroke="#ffffff" stroke-width="2"/>
-                <path d="M10 9h12v2.8h-8.8v2.8h7.8v2.8h-7.8v3.2h9V23H10V9z" fill="#ffffff"/>
-            </svg>
-        `;
-
-        const gogSvg = `
-            <svg width="24" height="14" viewBox="0 0 38 18" fill="none" style="display:block;">
-                <path d="M8 3a5.5 5.5 0 100 11h2.5v-3.5H8a2 2 0 110-4h2.5V3H8zm11 0a5.5 5.5 0 100 11 5.5 5.5 0 000-11zm0 3.5a2 2 0 110 4 2 2 0 010-4zm11-3.5a5.5 5.5 0 100 11h2.5v-3.5H30a2 2 0 110-4h2.5V3H30z" fill="#ffffff"/>
-            </svg>
-        `;
-
         // 3. Store Badges / Icons
         if (hasEpic) {
             const epicLink = document.createElement('a');
@@ -928,26 +914,36 @@
             epicLink.target = '_blank';
             epicLink.rel = 'noopener noreferrer';
             epicLink.title = `Owned on Epic Games Store ("${epicOwnedTitle}")\nClick to search on Epic Games Store`;
-            epicLink.innerHTML = epicSvg;
+            epicLink.innerHTML = `
+                <div style="display: inline-flex; align-items: center; gap: 4px;">
+                    <svg width="11" height="13" viewBox="0 0 24 28" fill="none" style="display:block; flex-shrink: 0;">
+                        <path fill-rule="evenodd" clip-rule="evenodd" d="M12 0.5L1 4.5v17.2C1 26.5 12 28 12 28s11-1.5 11-6.3V4.5L12 0.5zm0 2.4l8.8 3.2v14.6c0 3.2-8.8 4.8-8.8 4.8s-8.8-1.6-8.8-4.8V6.1L12 2.9zm-5 5.5h10v2.4H10v2.2h6.5v2.4H10v2.3h7.2v2.4H7V8.4z" fill="#ffffff"/>
+                    </svg>
+                    <span style="font-weight: 800; font-size: 10.5px; color: #ffffff; letter-spacing: 0.5px; line-height: 1;">EPIC</span>
+                </div>
+            `;
             epicLink.style.cssText = `
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
                 height: 20px;
-                padding: 0 5px;
-                background: #2a475e;
-                border: 1px solid #67c1f5;
+                padding: 0 6px;
+                background: #0074e4;
+                border: 1px solid #4aa3ff;
                 border-radius: 3px;
                 cursor: pointer;
                 text-decoration: none;
-                transition: transform 0.1s ease, background 0.15s ease;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.35);
+                transition: transform 0.1s ease, background 0.15s ease, border-color 0.15s ease;
             `;
             epicLink.addEventListener('mouseenter', function () {
-                epicLink.style.background = '#355b75';
-                epicLink.style.transform = 'scale(1.06)';
+                epicLink.style.background = '#0062c4';
+                epicLink.style.borderColor = '#80bfff';
+                epicLink.style.transform = 'scale(1.05)';
             });
             epicLink.addEventListener('mouseleave', function () {
-                epicLink.style.background = '#2a475e';
+                epicLink.style.background = '#0074e4';
+                epicLink.style.borderColor = '#4aa3ff';
                 epicLink.style.transform = 'scale(1)';
             });
             container.appendChild(epicLink);
@@ -959,26 +955,37 @@
             gogLink.target = '_blank';
             gogLink.rel = 'noopener noreferrer';
             gogLink.title = `Owned on GOG ("${gogOwnedTitle}")\nClick to search on GOG`;
-            gogLink.innerHTML = gogSvg;
+            gogLink.innerHTML = `
+                <div style="display: inline-flex; align-items: center; gap: 4px;">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" style="display:block; flex-shrink: 0;">
+                        <circle cx="12" cy="12" r="10" stroke="#ffffff" stroke-width="2.5"/>
+                        <circle cx="12" cy="12" r="4.5" fill="#ffffff"/>
+                    </svg>
+                    <span style="font-weight: 800; font-size: 10.5px; color: #ffffff; letter-spacing: 0.5px; line-height: 1;">GOG</span>
+                </div>
+            `;
             gogLink.style.cssText = `
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
                 height: 20px;
-                padding: 0 4px;
-                background: #4b0082;
-                border: 1px solid #a879e6;
+                padding: 0 6px;
+                background: #7a35d9;
+                border: 1px solid #b185e8;
                 border-radius: 3px;
                 cursor: pointer;
                 text-decoration: none;
-                transition: transform 0.1s ease, background 0.15s ease;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.35);
+                transition: transform 0.1s ease, background 0.15s ease, border-color 0.15s ease;
             `;
             gogLink.addEventListener('mouseenter', function () {
-                gogLink.style.background = '#663399';
-                gogLink.style.transform = 'scale(1.06)';
+                gogLink.style.background = '#6928c7';
+                gogLink.style.borderColor = '#d9baff';
+                gogLink.style.transform = 'scale(1.05)';
             });
             gogLink.addEventListener('mouseleave', function () {
-                gogLink.style.background = '#4b0082';
+                gogLink.style.background = '#7a35d9';
+                gogLink.style.borderColor = '#b185e8';
                 gogLink.style.transform = 'scale(1)';
             });
             container.appendChild(gogLink);
@@ -996,22 +1003,28 @@
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
-                width: 18px;
-                height: 18px;
+                height: 20px;
+                padding: 0 7px;
                 border-radius: 3px;
-                background: #e57373;
-                color: #1b2838;
+                background: rgba(229, 115, 115, 0.18);
+                border: 1px solid rgba(229, 115, 115, 0.45);
+                color: #ff7676;
                 font-size: 11px;
                 font-weight: 900;
                 text-decoration: none;
                 cursor: pointer;
-                transition: opacity 0.15s ease;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+                transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
             `;
             notOwnedBadge.addEventListener('mouseenter', function () {
-                notOwnedBadge.style.opacity = '0.85';
+                notOwnedBadge.style.background = 'rgba(229, 115, 115, 0.28)';
+                notOwnedBadge.style.borderColor = 'rgba(229, 115, 115, 0.7)';
+                notOwnedBadge.style.transform = 'scale(1.05)';
             });
             notOwnedBadge.addEventListener('mouseleave', function () {
-                notOwnedBadge.style.opacity = '1';
+                notOwnedBadge.style.background = 'rgba(229, 115, 115, 0.18)';
+                notOwnedBadge.style.borderColor = 'rgba(229, 115, 115, 0.45)';
+                notOwnedBadge.style.transform = 'scale(1)';
             });
             container.appendChild(notOwnedBadge);
         }
