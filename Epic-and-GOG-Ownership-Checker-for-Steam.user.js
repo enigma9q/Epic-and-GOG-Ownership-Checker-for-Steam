@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Epic and GOG Ownership Checker for Steam
 // @namespace    https://steam-multi-ownership.local/
-// @version      3.4
-// @author       Theodoros OhYeah (enigma9q) & ChatGPT
+// @version      3.5
+// @author       Theodoros OhYeah (enigma9q), ChatGPT & Antigravity
 // @description  Shows Epic and GOG ownership on Steam game pages, search results, library cards, similar games and recommendation cards
 // @match        https://store.steampowered.com/*
 // @match        https://accounts.epicgames.com/account/*
@@ -186,6 +186,79 @@
         return null;
     }
 
+    function getGogLibrary() {
+        const library = GM_getValue(GOG_LIBRARY_KEY, []);
+        return Array.isArray(library) ? library : [];
+    }
+
+    function getGogSyncTime() {
+        return GM_getValue(GOG_SYNC_TIME_KEY, 0);
+    }
+
+    function isGogCacheValid() {
+        const library = getGogLibrary();
+        const syncTime = getGogSyncTime();
+
+        return (
+            library.length > 0 &&
+            syncTime > 0 &&
+            Date.now() - syncTime <= CACHE_DURATION
+        );
+    }
+
+    function findGogOwnedTitle(normalizedTitle) {
+        if (!isGogCacheValid()) return null;
+
+        const library = getGogLibrary();
+
+        for (const entry of library) {
+            const gogTitle =
+                typeof entry === 'string'
+                    ? getComparisonTitle(entry)
+                    : entry.normalized;
+
+            if (gogTitle === normalizedTitle) {
+                return typeof entry === 'string'
+                    ? entry
+                    : entry.original;
+            }
+        }
+
+        return null;
+    }
+
+    function formatSyncDate(timestamp) {
+        if (!timestamp || timestamp <= 0) return 'Never';
+        try {
+            const date = new Date(timestamp);
+            const now = new Date();
+            const isToday = date.toDateString() === now.toDateString();
+            const timeStr = date.toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+            if (isToday) {
+                return `Today at ${timeStr}`;
+            }
+            const dateStr = date.toLocaleDateString([], {
+                month: 'short',
+                day: 'numeric',
+                year: 'numeric'
+            });
+            return `${dateStr} ${timeStr}`;
+        } catch (_) {
+            return new Date(timestamp).toLocaleDateString();
+        }
+    }
+
+    function getEpicSearchUrl(title) {
+        return `https://store.epicgames.com/en-US/browse?q=${encodeURIComponent(title || '')}`;
+    }
+
+    function getGogSearchUrl(title) {
+        return `https://www.gog.com/en/games?query=${encodeURIComponent(title || '')}`;
+    }
+
     // Epic must use GM_xmlhttpRequest rather than fetch().
     // Epic's endpoint does not provide the CORS header needed by fetch().
     function fetchEpicPage(nextPageToken, onSuccess, onError) {
@@ -253,107 +326,123 @@
         });
     }
 
-    function syncEpicLibrary(onProgress, onSuccess, onError) {
-        const games = [];
+    function syncEpicLibrary(options, onSuccessCb, onErrorCb) {
+        let isFullSync = false;
+        let onProgress = null;
+        let onSuccess = onSuccessCb;
+        let onError = onErrorCb;
+
+        if (typeof options === 'function') {
+            onProgress = options;
+        } else if (options && typeof options === 'object') {
+            isFullSync = !!options.isFullSync;
+            onProgress = options.onProgress;
+            if (options.onSuccess) onSuccess = options.onSuccess;
+            if (options.onError) onError = options.onError;
+        }
+
+        const existingLibrary = getEpicLibrary();
+        const existingSet = new Set(
+            existingLibrary.map(item => item.normalized)
+        );
+        const isSmart = !isFullSync && existingSet.size > 0;
+
+        const newlyFoundGames = [];
         let page = 0;
+        let shouldStop = false;
 
         function loadPage(nextPageToken) {
             page++;
 
             if (onProgress) {
                 onProgress(
-                    `Syncing Epic library... page ${page}`
+                    `Syncing Epic library (${isSmart ? 'Smart Mode' : 'Full Mode'})... page ${page}`
                 );
             }
 
             fetchEpicPage(
                 nextPageToken,
-
                 function (data) {
                     if (!Array.isArray(data.orders)) {
-                        onError(
-                            'Unexpected Epic response format'
-                        );
+                        if (onError) onError('Unexpected Epic response format');
                         return;
                     }
 
-                    data.orders.forEach(function (order) {
-                        if (!Array.isArray(order.items)) return;
+                    for (const order of data.orders) {
+                        if (!Array.isArray(order.items)) continue;
 
-                        order.items.forEach(function (item) {
+                        for (const item of order.items) {
                             if (
                                 !item ||
                                 typeof item.description !== 'string'
                             ) {
-                                return;
+                                continue;
                             }
 
                             const title = item.description.trim();
-                            if (!title) return;
+                            if (!title) continue;
 
-                            const normalized =
-                                getComparisonTitle(title);
+                            const normalized = getComparisonTitle(title);
+                            if (!normalized) continue;
 
-                            if (!normalized) return;
+                            if (isSmart && existingSet.has(normalized)) {
+                                shouldStop = true;
+                                break;
+                            }
 
-                            games.push({
+                            newlyFoundGames.push({
                                 original: title,
                                 normalized: normalized
                             });
-                        });
-                    });
+                        }
 
-                    if (data.nextPageToken) {
+                        if (shouldStop) break;
+                    }
+
+                    if (!shouldStop && data.nextPageToken) {
                         loadPage(data.nextPageToken);
                         return;
                     }
 
-                    const unique = new Map();
+                    let combined;
+                    if (isSmart) {
+                        combined = [...newlyFoundGames, ...existingLibrary];
+                    } else {
+                        combined = newlyFoundGames;
+                    }
 
-                    games.forEach(function (game) {
+                    const unique = new Map();
+                    combined.forEach(function (game) {
                         if (!unique.has(game.normalized)) {
-                            unique.set(
-                                game.normalized,
-                                game.original
-                            );
+                            unique.set(game.normalized, game.original);
                         }
                     });
 
-                    const library =
-                        Array.from(unique.entries()).map(
-                            function (entry) {
-                                return {
-                                    normalized: entry[0],
-                                    original: entry[1]
-                                };
-                            }
-                        );
-
-                    GM_setValue(
-                        EPIC_LIBRARY_KEY,
-                        library
+                    const finalLibrary = Array.from(unique.entries()).map(
+                        function (entry) {
+                            return {
+                                normalized: entry[0],
+                                original: entry[1]
+                            };
+                        }
                     );
 
-                    GM_setValue(
-                        EPIC_SYNC_TIME_KEY,
-                        Date.now()
-                    );
+                    GM_setValue(EPIC_LIBRARY_KEY, finalLibrary);
+                    GM_setValue(EPIC_SYNC_TIME_KEY, Date.now());
 
                     console.log(
                         '[Steam → Epic] Sync complete:',
-                        library.length,
+                        finalLibrary.length,
                         'titles'
                     );
 
-                    onSuccess(library);
+                    if (onSuccess) {
+                        onSuccess(finalLibrary, newlyFoundGames.length, isSmart);
+                    }
                 },
-
                 function (error) {
-                    console.error(
-                        '[Steam → Epic] Sync failed:',
-                        error
-                    );
-                    onError(error);
+                    console.error('[Steam → Epic] Sync failed:', error);
+                    if (onError) onError(error);
                 }
             );
         }
@@ -361,52 +450,11 @@
         loadPage('');
     }
 
-    function getGogLibrary() {
-        const library = GM_getValue(GOG_LIBRARY_KEY, []);
-        return Array.isArray(library) ? library : [];
-    }
-
-    function getGogSyncTime() {
-        return GM_getValue(GOG_SYNC_TIME_KEY, 0);
-    }
-
-    function isGogCacheValid() {
-        const library = getGogLibrary();
-        const syncTime = getGogSyncTime();
-
-        return (
-            library.length > 0 &&
-            syncTime > 0 &&
-            Date.now() - syncTime <= CACHE_DURATION
-        );
-    }
-
-    function findGogOwnedTitle(normalizedTitle) {
-        if (!isGogCacheValid()) return null;
-
-        const library = getGogLibrary();
-
-        for (const entry of library) {
-            const gogTitle =
-                typeof entry === 'string'
-                    ? getComparisonTitle(entry)
-                    : entry.normalized;
-
-            if (gogTitle === normalizedTitle) {
-                return typeof entry === 'string'
-                    ? entry
-                    : entry.original;
-            }
-        }
-
-        return null;
-    }
-
     function fetchGogPage(page) {
         const params = new URLSearchParams({
             mediaType: '1',
             page: String(page),
-            sortBy: 'title',
+            sortBy: 'date_purchased',
             hiddenFlag: '0',
             isUpdated: '0',
             hasHiddenProducts: 'false'
@@ -431,11 +479,6 @@
                 },
 
                 onload: function (response) {
-                    console.log(
-                        '[Steam → GOG] GOG response:',
-                        response.status
-                    );
-
                     if (
                         response.status < 200 ||
                         response.status >= 300
@@ -449,11 +492,7 @@
                     }
 
                     try {
-                        const data =
-                            JSON.parse(
-                                response.responseText
-                            );
-
+                        const data = JSON.parse(response.responseText);
                         resolve(data);
                     } catch (error) {
                         reject(
@@ -465,73 +504,82 @@
                 },
 
                 onerror: function () {
-                    reject(
-                        new Error(
-                            'Could not connect to GOG.'
-                        )
-                    );
+                    reject(new Error('Could not connect to GOG.'));
                 },
 
                 ontimeout: function () {
-                    reject(
-                        new Error(
-                            'GOG request timed out.'
-                        )
-                    );
+                    reject(new Error('GOG request timed out.'));
                 }
             });
         });
     }
 
-    async function fetchGogGames(updateProgress) {
+    async function fetchGogGames(updateProgress, isFullSync) {
+        const existingLibrary = getGogLibrary();
+        const existingSet = new Set(
+            existingLibrary.map(item => item.normalized)
+        );
+        const isSmart = !isFullSync && existingSet.size > 0;
+
         updateProgress(
-            'Requesting GOG library...'
+            `Requesting GOG library (${isSmart ? 'Smart Mode' : 'Full Mode'})...`
         );
 
-        const firstPage =
-            await fetchGogPage(1);
+        const firstPage = await fetchGogPage(1);
 
         if (
             !firstPage ||
             !Array.isArray(firstPage.products)
         ) {
-            throw new Error(
-                'GOG did not return a valid game library.'
-            );
+            throw new Error('GOG did not return a valid game library.');
         }
 
-        const products = [
-            ...firstPage.products
-        ];
+        const products = [];
+        let hitExisting = false;
 
-        const totalPages =
-            Number(firstPage.totalPages) || 1;
+        for (const product of firstPage.products) {
+            if (!product || product.isMovie === true || product.isGame === false) continue;
+            if (!product.title || typeof product.title !== 'string') continue;
+            const norm = getComparisonTitle(product.title);
+            if (!norm) continue;
 
-        updateProgress(
-            `GOG library: page 1 of ${totalPages}...`
-        );
+            if (isSmart && existingSet.has(norm)) {
+                hitExisting = true;
+                break;
+            }
+            products.push(product);
+        }
 
-        for (
-            let page = 2;
-            page <= totalPages;
-            page++
-        ) {
-            updateProgress(
-                `GOG library: page ${page} of ${totalPages}...`
-            );
+        const totalPages = Number(firstPage.totalPages) || 1;
 
-            const data =
-                await fetchGogPage(page);
+        if (!hitExisting && totalPages > 1) {
+            for (let page = 2; page <= totalPages; page++) {
+                updateProgress(
+                    `GOG library: page ${page} of ${totalPages}...`
+                );
 
-            if (
-                data &&
-                Array.isArray(data.products)
-            ) {
-                products.push(...data.products);
+                const data = await fetchGogPage(page);
+
+                if (data && Array.isArray(data.products)) {
+                    for (const product of data.products) {
+                        if (!product || product.isMovie === true || product.isGame === false) continue;
+                        if (!product.title || typeof product.title !== 'string') continue;
+                        const norm = getComparisonTitle(product.title);
+                        if (!norm) continue;
+
+                        if (isSmart && existingSet.has(norm)) {
+                            hitExisting = true;
+                            break;
+                        }
+                        products.push(product);
+                    }
+                }
+
+                if (hitExisting) break;
             }
         }
 
-        return products;
+        return { products, isSmart };
     }
 
     function extractGogLibrary(products) {
@@ -550,10 +598,7 @@
             }
 
             const title = product.title.trim();
-
-            const normalized =
-                getComparisonTitle(title);
-
+            const normalized = getComparisonTitle(title);
             if (!normalized) continue;
 
             library.push({
@@ -563,13 +608,9 @@
         }
 
         const unique = new Map();
-
         for (const game of library) {
             if (!unique.has(game.normalized)) {
-                unique.set(
-                    game.normalized,
-                    game.original
-                );
+                unique.set(game.normalized, game.original);
             }
         }
 
@@ -583,25 +624,48 @@
         );
     }
 
-    async function syncGogLibrary(updateProgress) {
-        updateProgress(
-            'Downloading GOG library...'
-        );
+    async function syncGogLibrary(options) {
+        let isFullSync = false;
+        let updateProgress = function () { };
 
-        const products =
-            await fetchGogGames(updateProgress);
+        if (typeof options === 'function') {
+            updateProgress = options;
+        } else if (options && typeof options === 'object') {
+            isFullSync = !!options.isFullSync;
+            if (typeof options.onProgress === 'function') {
+                updateProgress = options.onProgress;
+            }
+        }
 
-        console.log(
-            '[Steam → GOG] Products received:',
-            products.length
-        );
+        updateProgress('Downloading GOG library...');
 
-        const library =
-            extractGogLibrary(products);
+        const { products, isSmart } =
+            await fetchGogGames(updateProgress, isFullSync);
 
-        console.log(
-            '[Steam → GOG] Games extracted:',
-            library.length
+        const newlyExtracted = extractGogLibrary(products);
+        const existingLibrary = getGogLibrary();
+
+        let combined;
+        if (isSmart && existingLibrary.length > 0) {
+            combined = [...newlyExtracted, ...existingLibrary];
+        } else {
+            combined = newlyExtracted;
+        }
+
+        const unique = new Map();
+        for (const game of combined) {
+            if (!unique.has(game.normalized)) {
+                unique.set(game.normalized, game.original);
+            }
+        }
+
+        const library = Array.from(unique.entries()).map(
+            function ([normalized, original]) {
+                return {
+                    normalized: normalized,
+                    original: original
+                };
+            }
         );
 
         if (!library.length) {
@@ -610,21 +674,18 @@
             );
         }
 
-        await GM_setValue(
-            GOG_LIBRARY_KEY,
-            library
-        );
-
-        await GM_setValue(
-            GOG_SYNC_TIME_KEY,
-            Date.now()
-        );
+        await GM_setValue(GOG_LIBRARY_KEY, library);
+        await GM_setValue(GOG_SYNC_TIME_KEY, Date.now());
 
         console.log(
             `[Steam → GOG] Sync complete: ${library.length} titles`
         );
 
-        return library;
+        return {
+            library: library,
+            newCount: newlyExtracted.length,
+            isSmart: isSmart
+        };
     }
 
     function getSteamTitleElement() {
@@ -632,18 +693,16 @@
     }
 
     function captureOriginalSteamTitle() {
-        const element =
-            getSteamTitleElement();
-
+        const element = getSteamTitleElement();
         if (!element) return null;
 
         if (!originalSteamTitle) {
-            const clone =
-                element.cloneNode(true);
+            const clone = element.cloneNode(true);
 
             clone
                 .querySelectorAll(
                     [
+                        '#steam-ownership-indicator',
                         '#steam-epic-indicator',
                         '#steam-gog-indicator',
                         '#steam-amazon-indicator',
@@ -654,20 +713,12 @@
                     node.remove();
                 });
 
-            let text =
-                clone.textContent.trim();
+            let text = clone.textContent.trim();
 
-            text =
-                text
-                    .replace(
-                        /Current:\s*[\d.,]+€?/gi,
-                        ''
-                    )
-                    .replace(
-                        /Historical:\s*[\d.,]+€?/gi,
-                        ''
-                    )
-                    .trim();
+            text = text
+                .replace(/Current:\s*[\d.,]+€?/gi, '')
+                .replace(/Historical:\s*[\d.,]+€?/gi, '')
+                .trim();
 
             if (text) {
                 originalSteamTitle = text;
@@ -677,243 +728,315 @@
         return originalSteamTitle;
     }
 
-    function createGamePageRefreshButton(platform) {
-        const refresh =
-            document.createElement('a');
+    /*
+     * Renders a single unified indicator on Steam Game Pages:
+     * Owned: [Epic Icon] [GOG Icon]
+     * Shows icon for store where owned, else X (or single X if not owned on both).
+     * Includes a down arrow before Owned for store updater dropdown.
+     */
+    function renderUnifiedOwnershipBox(steamTitle, epicOwnedTitle, gogOwnedTitle) {
+        const titleElement = getSteamTitleElement();
+        if (!titleElement) return false;
 
-        refresh.href =
-            platform === 'epic'
-                ? EPIC_TRANSACTIONS_URL
-                : GOG_LIBRARY_URL;
-
-        refresh.target = '_blank';
-        refresh.rel = 'noopener noreferrer';
-        refresh.textContent = '↻';
-
-        refresh.title =
-            platform === 'epic'
-                ? 'Open Epic Transactions'
-                : 'Open GOG account';
-
-        refresh.style.cssText = `
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 16px;
-            height: 16px;
-            margin-left: 5px;
-            padding: 0;
-            color: #79a8d8;
-            text-decoration: none !important;
-            font-family: Arial,sans-serif;
-            font-size: 15px;
-            font-weight: 700;
-            line-height: 16px;
-            cursor: pointer;
-            opacity: .9;
-        `;
-
-        return refresh;
-    }
-
-    function addGamePageBadge(
-        platform,
-        state,
-        tooltip
-    ) {
-        const title =
-            getSteamTitleElement();
-
-        if (!title) return false;
-
-        const id =
-            platform === 'epic'
-                ? 'steam-epic-indicator'
-                : 'steam-gog-indicator';
-
-        const existing =
-            document.getElementById(id);
-
+        const existing = document.getElementById('steam-ownership-indicator');
         if (existing) {
             existing.remove();
         }
 
-        title.style.display = 'inline-flex';
-        title.style.alignItems = 'center';
+        titleElement.style.display = 'inline-flex';
+        titleElement.style.alignItems = 'center';
+        titleElement.style.flexWrap = 'wrap';
 
-        const wrapper =
-            document.createElement('span');
+        const hasEpic = !!epicOwnedTitle;
+        const hasGog = !!gogOwnedTitle;
+        const hasAny = hasEpic || hasGog;
 
-        wrapper.id = id;
-        wrapper.title = tooltip;
-
-        const background =
-            platform === 'epic'
-                ? '#2a475e'
-                : '#4b0082';
-
-        const border =
-            platform === 'epic'
-                ? '#4f6b7f'
-                : '#7b4ca8';
-
-        const hoverBackground =
-            platform === 'epic'
-                ? '#355b75'
-                : '#663399';
-
-        const hoverBorder =
-            platform === 'epic'
-                ? '#6f91a8'
-                : '#9666c2';
-
-        wrapper.style.cssText = `
+        const container = document.createElement('span');
+        container.id = 'steam-ownership-indicator';
+        container.style.cssText = `
             display: inline-flex;
             align-items: center;
-            justify-content: center;
-            gap: 4px;
             margin-left: 10px;
-            height: 24px;
-            padding: 0 6px;
-            background: ${background};
-            border: 1px solid ${border};
-            box-sizing: border-box;
-            border-radius: 3px;
+            height: 26px;
+            padding: 2px 6px 2px 4px;
+            background: #171d25;
+            border: 1px solid #3d4450;
+            border-radius: 4px;
             vertical-align: middle;
-            color: #ffffff;
+            color: #c6d4df;
+            font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
             font-size: 12px;
-            font-weight: bold;
-            line-height: 24px;
-            white-space: nowrap;
+            box-sizing: border-box;
+            position: relative;
+            user-select: none;
             flex-shrink: 0;
+            gap: 5px;
+            z-index: 100;
         `;
 
-        const label =
-            document.createElement('span');
-
-        label.textContent =
-            platform === 'epic'
-                ? 'Epic:'
-                : 'GOG:';
-
-        const icon =
-            document.createElement('span');
-
-        icon.textContent =
-            state === 'owned'
-                ? '✓'
-                : state === 'not-owned'
-                    ? '✕'
-                    : '?';
-
-        icon.style.cssText = `
+        // 1. Dropdown Arrow Button before "Owned:"
+        const arrowBtn = document.createElement('button');
+        arrowBtn.type = 'button';
+        arrowBtn.title = 'Update stores database';
+        arrowBtn.innerHTML = `
+            <svg width="10" height="10" viewBox="0 0 12 12" fill="none" style="display:block;">
+                <path d="M2.5 4.5L6 8L9.5 4.5" stroke="#79a8d8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+        `;
+        arrowBtn.style.cssText = `
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            width: 15px;
-            height: 15px;
-            border-radius: 2px;
-            background: ${
-                state === 'owned'
-                    ? '#67d46a'
-                    : state === 'not-owned'
-                        ? '#e57373'
-                        : '#999999'
-            };
-            color: #1b2838;
-            font-size: 10px;
-            font-weight: 900;
-            line-height: 15px;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 3px;
+            padding: 2px 4px;
+            cursor: pointer;
+            height: 18px;
+            width: 18px;
+            box-sizing: border-box;
+            transition: all 0.15s ease;
         `;
 
-        wrapper.appendChild(label);
-        wrapper.appendChild(icon);
+        arrowBtn.addEventListener('mouseenter', function () {
+            arrowBtn.style.background = 'rgba(255, 255, 255, 0.15)';
+            arrowBtn.style.borderColor = '#79a8d8';
+        });
+        arrowBtn.addEventListener('mouseleave', function () {
+            arrowBtn.style.background = 'rgba(255, 255, 255, 0.06)';
+            arrowBtn.style.borderColor = 'rgba(255, 255, 255, 0.15)';
+        });
 
-        wrapper.appendChild(
-            createGamePageRefreshButton(platform)
-        );
+        // Dropdown Menu
+        const dropdownMenu = document.createElement('div');
+        dropdownMenu.style.cssText = `
+            position: absolute;
+            top: 30px;
+            left: 0;
+            background: #1b2838;
+            border: 1px solid #4f6b7f;
+            border-radius: 5px;
+            padding: 8px 10px;
+            box-shadow: 0 6px 18px rgba(0,0,0,0.6);
+            z-index: 99999;
+            display: none;
+            min-width: 250px;
+            font-size: 12px;
+            color: #e1e8ee;
+            text-align: left;
+            white-space: normal;
+        `;
 
-        wrapper.addEventListener(
-            'mouseenter',
-            function () {
-                wrapper.style.background =
-                    hoverBackground;
+        const epicSyncTime = getEpicSyncTime();
+        const gogSyncTime = getGogSyncTime();
+        const epicLib = getEpicLibrary();
+        const gogLib = getGogLibrary();
 
-                wrapper.style.borderColor =
-                    hoverBorder;
+        dropdownMenu.innerHTML = `
+            <div style="font-weight: bold; margin-bottom: 6px; font-size: 11px; text-transform: uppercase; color: #8f98a0; letter-spacing: 0.5px;">
+                Sync to Database
+            </div>
+            <a href="${EPIC_TRANSACTIONS_URL}" target="_blank" rel="noopener noreferrer" style="
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 6px 8px;
+                background: #213244;
+                border-radius: 4px;
+                color: #ffffff;
+                text-decoration: none;
+                margin-bottom: 6px;
+                border: 1px solid #334d66;
+            " onmouseover="this.style.background='#2a475e'" onmouseout="this.style.background='#213244'">
+                <div>
+                    <div style="font-weight: 600; color: #67c1f5;">Update Epic Store</div>
+                    <div style="font-size: 10px; color: #8f98a0; margin-top: 2px;">
+                        Last: ${formatSyncDate(epicSyncTime)} (${epicLib.length} games)
+                    </div>
+                </div>
+                <span style="font-size: 14px; margin-left: 6px; color: #79a8d8;">↗</span>
+            </a>
+            <a href="${GOG_LIBRARY_URL}" target="_blank" rel="noopener noreferrer" style="
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 6px 8px;
+                background: #2a203b;
+                border-radius: 4px;
+                color: #ffffff;
+                text-decoration: none;
+                border: 1px solid #4c376c;
+            " onmouseover="this.style.background='#3d2c57'" onmouseout="this.style.background='#2a203b'">
+                <div>
+                    <div style="font-weight: 600; color: #c499f5;">Update GOG Store</div>
+                    <div style="font-size: 10px; color: #8f98a0; margin-top: 2px;">
+                        Last: ${formatSyncDate(gogSyncTime)} (${gogLib.length} games)
+                    </div>
+                </div>
+                <span style="font-size: 14px; margin-left: 6px; color: #b185e8;">↗</span>
+            </a>
+        `;
+
+        function toggleDropdown(e) {
+            e.stopPropagation();
+            const isOpen = dropdownMenu.style.display === 'block';
+            dropdownMenu.style.display = isOpen ? 'none' : 'block';
+        }
+
+        arrowBtn.addEventListener('click', toggleDropdown);
+
+        document.addEventListener('click', function (e) {
+            if (!container.contains(e.target)) {
+                dropdownMenu.style.display = 'none';
             }
-        );
+        });
 
-        wrapper.addEventListener(
-            'mouseleave',
-            function () {
-                wrapper.style.background =
-                    background;
+        container.appendChild(arrowBtn);
+        container.appendChild(dropdownMenu);
 
-                wrapper.style.borderColor =
-                    border;
-            }
-        );
+        // 2. "Owned:" Label
+        const label = document.createElement('span');
+        label.textContent = 'Owned:';
+        label.style.cssText = `
+            font-weight: bold;
+            font-size: 11px;
+            color: #8f98a0;
+            margin-right: 2px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        `;
+        container.appendChild(label);
 
-        title.appendChild(wrapper);
+        // SVG Logos
+        const epicSvg = `
+            <svg width="14" height="14" viewBox="0 0 32 32" fill="none" style="display:block;">
+                <path d="M16 2L3 7v13l13 10 13-10V7L16 2z" fill="#1b2838" stroke="#ffffff" stroke-width="2"/>
+                <path d="M10 9h12v2.8h-8.8v2.8h7.8v2.8h-7.8v3.2h9V23H10V9z" fill="#ffffff"/>
+            </svg>
+        `;
 
+        const gogSvg = `
+            <svg width="24" height="14" viewBox="0 0 38 18" fill="none" style="display:block;">
+                <path d="M8 3a5.5 5.5 0 100 11h2.5v-3.5H8a2 2 0 110-4h2.5V3H8zm11 0a5.5 5.5 0 100 11 5.5 5.5 0 000-11zm0 3.5a2 2 0 110 4 2 2 0 010-4zm11-3.5a5.5 5.5 0 100 11h2.5v-3.5H30a2 2 0 110-4h2.5V3H30z" fill="#ffffff"/>
+            </svg>
+        `;
+
+        // 3. Store Badges / Icons
+        if (hasEpic) {
+            const epicLink = document.createElement('a');
+            epicLink.href = getEpicSearchUrl(epicOwnedTitle || steamTitle);
+            epicLink.target = '_blank';
+            epicLink.rel = 'noopener noreferrer';
+            epicLink.title = `Owned on Epic Games Store ("${epicOwnedTitle}")\nClick to search on Epic Games Store`;
+            epicLink.innerHTML = epicSvg;
+            epicLink.style.cssText = `
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                height: 20px;
+                padding: 0 5px;
+                background: #2a475e;
+                border: 1px solid #67c1f5;
+                border-radius: 3px;
+                cursor: pointer;
+                text-decoration: none;
+                transition: transform 0.1s ease, background 0.15s ease;
+            `;
+            epicLink.addEventListener('mouseenter', function () {
+                epicLink.style.background = '#355b75';
+                epicLink.style.transform = 'scale(1.06)';
+            });
+            epicLink.addEventListener('mouseleave', function () {
+                epicLink.style.background = '#2a475e';
+                epicLink.style.transform = 'scale(1)';
+            });
+            container.appendChild(epicLink);
+        }
+
+        if (hasGog) {
+            const gogLink = document.createElement('a');
+            gogLink.href = getGogSearchUrl(gogOwnedTitle || steamTitle);
+            gogLink.target = '_blank';
+            gogLink.rel = 'noopener noreferrer';
+            gogLink.title = `Owned on GOG ("${gogOwnedTitle}")\nClick to search on GOG`;
+            gogLink.innerHTML = gogSvg;
+            gogLink.style.cssText = `
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                height: 20px;
+                padding: 0 4px;
+                background: #4b0082;
+                border: 1px solid #a879e6;
+                border-radius: 3px;
+                cursor: pointer;
+                text-decoration: none;
+                transition: transform 0.1s ease, background 0.15s ease;
+            `;
+            gogLink.addEventListener('mouseenter', function () {
+                gogLink.style.background = '#663399';
+                gogLink.style.transform = 'scale(1.06)';
+            });
+            gogLink.addEventListener('mouseleave', function () {
+                gogLink.style.background = '#4b0082';
+                gogLink.style.transform = 'scale(1)';
+            });
+            container.appendChild(gogLink);
+        }
+
+        // If not owned on both stores, display a single X
+        if (!hasAny) {
+            const notOwnedBadge = document.createElement('a');
+            notOwnedBadge.href = getEpicSearchUrl(steamTitle);
+            notOwnedBadge.target = '_blank';
+            notOwnedBadge.rel = 'noopener noreferrer';
+            notOwnedBadge.title = 'Not owned on Epic or GOG\nClick to search on Epic Games Store';
+            notOwnedBadge.textContent = '✕';
+            notOwnedBadge.style.cssText = `
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 18px;
+                height: 18px;
+                border-radius: 3px;
+                background: #e57373;
+                color: #1b2838;
+                font-size: 11px;
+                font-weight: 900;
+                text-decoration: none;
+                cursor: pointer;
+                transition: opacity 0.15s ease;
+            `;
+            notOwnedBadge.addEventListener('mouseenter', function () {
+                notOwnedBadge.style.opacity = '0.85';
+            });
+            notOwnedBadge.addEventListener('mouseleave', function () {
+                notOwnedBadge.style.opacity = '1';
+            });
+            container.appendChild(notOwnedBadge);
+        }
+
+        titleElement.appendChild(container);
         return true;
     }
 
     function checkGamePage() {
-        const steamTitle =
-            captureOriginalSteamTitle();
-
+        const steamTitle = captureOriginalSteamTitle();
         if (!steamTitle) return;
 
-        const comparisonTitle =
-            getComparisonTitle(steamTitle);
+        const comparisonTitle = getComparisonTitle(steamTitle);
 
-        if (!isEpicCacheValid()) {
-            addGamePageBadge(
-                'epic',
-                'unknown',
-                'Epic library cache is missing or older than 7 days. Click ↻ to open Epic Transactions.'
-            );
-        } else {
-            const epicOwned =
-                findEpicOwnedTitle(
-                    comparisonTitle
-                );
-
-            addGamePageBadge(
-                'epic',
-                epicOwned
-                    ? 'owned'
-                    : 'not-owned',
-                epicOwned
-                    ? `You own "${epicOwned}" on Epic Games Store.`
-                    : 'You do not own this game on Epic Games Store.'
-            );
+        let epicOwnedTitle = null;
+        if (isEpicCacheValid()) {
+            epicOwnedTitle = findEpicOwnedTitle(comparisonTitle);
         }
 
-        if (!isGogCacheValid()) {
-            addGamePageBadge(
-                'gog',
-                'unknown',
-                'GOG library cache is missing or older than 7 days. Click ↻ to open your GOG account.'
-            );
-        } else {
-            const gogOwned =
-                findGogOwnedTitle(
-                    comparisonTitle
-                );
-
-            addGamePageBadge(
-                'gog',
-                gogOwned
-                    ? 'owned'
-                    : 'not-owned',
-                gogOwned
-                    ? `You own "${gogOwned}" through GOG.`
-                    : 'You do not own this game through GOG.'
-            );
+        let gogOwnedTitle = null;
+        if (isGogCacheValid()) {
+            gogOwnedTitle = findGogOwnedTitle(comparisonTitle);
         }
+
+        renderUnifiedOwnershipBox(steamTitle, epicOwnedTitle, gogOwnedTitle);
     }
 
     function isSteamPopup(element) {
@@ -939,7 +1062,7 @@
                 if (element.closest(selector)) {
                     return true;
                 }
-            } catch (_) {}
+            } catch (_) { }
         }
 
         return false;
@@ -948,47 +1071,36 @@
     function cleanCardText(text) {
         if (!text) return null;
 
-        let result =
-            String(text)
-                .replace(/\s+/g, ' ')
-                .trim();
-
-        result =
-            result.replace(
-                /\b\d+(?:[.,]\d{1,2})?\s*€\b/gi,
-                ''
-            );
-
-        result =
-            result.replace(
-                /\b\d+(?:[.,]\d{1,2})?\s*(?:EUR|USD|GBP)\b/gi,
-                ''
-            );
-
-        return result
+        let result = String(text)
             .replace(/\s+/g, ' ')
             .trim();
+
+        result = result.replace(
+            /\b\d+(?:[.,]\d{1,2})?\s*€\b/gi,
+            ''
+        );
+
+        result = result.replace(
+            /\b\d+(?:[.,]\d{1,2})?\s*(?:EUR|USD|GBP)\b/gi,
+            ''
+        );
+
+        return result.replace(/\s+/g, ' ').trim();
     }
 
     function getTitleFromSlug(href) {
         if (!href) return null;
 
-        const match =
-            href.match(
-                /\/app\/\d+\/([^/?#]+)/
-            );
-
+        const match = href.match(/\/app\/\d+\/([^/?#]+)/);
         if (!match) return null;
 
         let slug = match[1];
 
         try {
             slug = decodeURIComponent(slug);
-        } catch (_) {}
+        } catch (_) { }
 
-        return cleanCardText(
-            slug.replace(/_/g, ' ')
-        );
+        return cleanCardText(slug.replace(/_/g, ' '));
     }
 
     function getCardTitleFromAttributes(element) {
@@ -999,17 +1111,12 @@
         ];
 
         for (const attribute of attributes) {
-            const value =
-                element.getAttribute(attribute);
-
-            const cleaned =
-                cleanCardText(value);
+            const value = element.getAttribute(attribute);
+            const cleaned = cleanCardText(value);
 
             if (
                 cleaned &&
-                /^(in library|add to library|wishlist)$/i.test(
-                    cleaned
-                )
+                /^(in library|add to library|wishlist)$/i.test(cleaned)
             ) {
                 continue;
             }
@@ -1043,18 +1150,14 @@
         ];
 
         for (const selector of selectors) {
-            const nodes =
-                element.querySelectorAll(selector);
+            const nodes = element.querySelectorAll(selector);
 
             for (const node of nodes) {
-                const cleaned =
-                    cleanCardText(node.textContent);
+                const cleaned = cleanCardText(node.textContent);
 
                 if (
                     cleaned &&
-                    !/^(in library|add to library|wishlist)$/i.test(
-                        cleaned
-                    ) &&
+                    !/^(in library|add to library|wishlist)$/i.test(cleaned) &&
                     cleaned.length > 1 &&
                     cleaned.length < 150
                 ) {
@@ -1067,20 +1170,14 @@
     }
 
     function getCardTitleFromImage(element) {
-        const images =
-            element.querySelectorAll('img');
+        const images = element.querySelectorAll('img');
 
         for (const image of images) {
-            const alt =
-                cleanCardText(
-                    image.getAttribute('alt')
-                );
+            const alt = cleanCardText(image.getAttribute('alt'));
 
             if (
                 alt &&
-                !/^(in library|add to library|wishlist)$/i.test(
-                    alt
-                ) &&
+                !/^(in library|add to library|wishlist)$/i.test(alt) &&
                 alt.length > 1 &&
                 alt.length < 150
             ) {
@@ -1092,35 +1189,22 @@
     }
 
     function getCardTitle(element) {
-        let title =
-            getCardTitleFromKnownElements(element);
-
+        let title = getCardTitleFromKnownElements(element);
         if (title) return title;
 
-        title =
-            getCardTitleFromImage(element);
-
+        title = getCardTitleFromImage(element);
         if (title) return title;
 
-        title =
-            getCardTitleFromAttributes(element);
-
+        title = getCardTitleFromAttributes(element);
         if (title) return title;
 
         const link =
-            element.matches &&
-            element.matches('a[href*="/app/"]')
+            element.matches && element.matches('a[href*="/app/"]')
                 ? element
-                : element.querySelector(
-                    'a[href*="/app/"]'
-                );
+                : element.querySelector('a[href*="/app/"]');
 
         if (link) {
-            title =
-                getTitleFromSlug(
-                    link.getAttribute('href')
-                );
-
+            title = getTitleFromSlug(link.getAttribute('href'));
             if (title) return title;
         }
 
@@ -1151,45 +1235,32 @@
             '.carousel_items > a'
         ];
 
-        const elements =
-            document.querySelectorAll(
-                selectors.join(', ')
-            );
-
-        return [
-            ...new Set(elements)
-        ];
+        const elements = document.querySelectorAll(selectors.join(', '));
+        return [...new Set(elements)];
     }
 
     function getCardFromAppLink(link) {
         if (!link) return null;
+        if (isSteamPopup(link)) return null;
 
-        if (isSteamPopup(link)) {
-            return null;
-        }
+        const directKnownCard = link.closest(
+            [
+                '.search_result_row',
+                '.recommendation',
+                '.recommendation_card',
+                '.recommendation_card_container',
+                '.similar_grid_item',
+                '.store_capsule',
+                '.small_cap',
+                '.home_smallcap',
+                '.tab_item',
+                '.dailydeal',
+                '.specials_item',
+                '.curator_recommendation'
+            ].join(', ')
+        );
 
-        const directKnownCard =
-            link.closest(
-                [
-                    '.search_result_row',
-                    '.recommendation',
-                    '.recommendation_card',
-                    '.recommendation_card_container',
-                    '.similar_grid_item',
-                    '.store_capsule',
-                    '.small_cap',
-                    '.home_smallcap',
-                    '.tab_item',
-                    '.dailydeal',
-                    '.specials_item',
-                    '.curator_recommendation'
-                ].join(', ')
-            );
-
-        if (
-            directKnownCard &&
-            !isSteamPopup(directKnownCard)
-        ) {
+        if (directKnownCard && !isSteamPopup(directKnownCard)) {
             return directKnownCard;
         }
 
@@ -1197,34 +1268,21 @@
         let bestCard = null;
         let bestArea = Infinity;
 
-        for (
-            let depth = 0;
-            current &&
-            depth < 8;
-            depth++
-        ) {
+        for (let depth = 0; current && depth < 8; depth++) {
             if (isSteamPopup(current)) {
                 return null;
             }
 
-            const appLinks =
-                current.querySelectorAll(
-                    'a[href*="/app/"]'
-                );
+            const appLinks = current.querySelectorAll('a[href*="/app/"]');
 
             if (appLinks.length === 1) {
-                const hasImage =
-                    !!current.querySelector('img');
-
-                const hasTitle =
-                    !!current.querySelector(
-                        '.title, .game_name, .search_name, .tab_item_name, [class*="Title"], [class*="title"]'
-                    );
+                const hasImage = !!current.querySelector('img');
+                const hasTitle = !!current.querySelector(
+                    '.title, .game_name, .search_name, .tab_item_name, [class*="Title"], [class*="title"]'
+                );
 
                 if (hasImage || hasTitle) {
-                    const rect =
-                        current.getBoundingClientRect();
-
+                    const rect = current.getBoundingClientRect();
                     const width = rect.width;
                     const height = rect.height;
 
@@ -1234,9 +1292,7 @@
                         width <= 900 &&
                         height <= 600
                     ) {
-                        const area =
-                            width * height;
-
+                        const area = width * height;
                         if (area < bestArea) {
                             bestArea = area;
                             bestCard = current;
@@ -1251,41 +1307,21 @@
         return bestCard;
     }
 
-    /*
-     * Small Steam cards only receive badges for games that
-     * are actually owned. Not-owned games get no badge.
-     */
-    function createCardBadge(
-        platform,
-        state,
-        tooltip
-    ) {
+    function createCardBadge(platform, state, tooltip) {
         if (state !== 'owned') {
             return null;
         }
 
-        const badge =
-            document.createElement('span');
-
+        const badge = document.createElement('span');
         badge.className =
             platform === 'epic'
                 ? EPIC_CARD_BADGE_CLASS
                 : GOG_CARD_BADGE_CLASS;
 
-        const label =
-            platform === 'epic'
-                ? 'Epic'
-                : 'GOG';
-
-        badge.textContent =
-            `${label} ✓`;
-
+        const label = platform === 'epic' ? 'Epic' : 'GOG';
+        badge.textContent = `${label} ✓`;
         badge.title = tooltip;
 
-        /*
-         * Same green background and same dark text
-         * for Epic and GOG.
-         */
         badge.style.cssText = `
             display: inline-flex;
             align-items: center;
@@ -1314,11 +1350,7 @@
         return badge;
     }
 
-    function insertCardBadges(
-        card,
-        epicOwnedTitle,
-        gogOwnedTitle
-    ) {
+    function insertCardBadges(card, epicOwnedTitle, gogOwnedTitle) {
         if (!card) return;
 
         card
@@ -1329,13 +1361,7 @@
                 badge.remove();
             });
 
-        /*
-         * No ownership = absolutely nothing displayed.
-         */
-        if (
-            !epicOwnedTitle &&
-            !gogOwnedTitle
-        ) {
+        if (!epicOwnedTitle && !gogOwnedTitle) {
             return;
         }
 
@@ -1355,77 +1381,49 @@
         let titleElement = null;
 
         for (const selector of titleSelectors) {
-            const element =
-                card.querySelector(selector);
-
-            if (
-                element &&
-                element.textContent.trim()
-            ) {
+            const element = card.querySelector(selector);
+            if (element && element.textContent.trim()) {
                 titleElement = element;
                 break;
             }
         }
 
         if (titleElement) {
-            titleElement.style.display =
-                'inline-flex';
-
-            titleElement.style.alignItems =
-                'center';
-
-            titleElement.style.flexWrap =
-                'wrap';
+            titleElement.style.display = 'inline-flex';
+            titleElement.style.alignItems = 'center';
+            titleElement.style.flexWrap = 'wrap';
 
             if (epicOwnedTitle) {
-                const badge =
-                    createCardBadge(
-                        'epic',
-                        'owned',
-                        `You own "${epicOwnedTitle}" on Epic Games Store.`
-                    );
-
-                if (badge) {
-                    titleElement.appendChild(badge);
-                }
+                const badge = createCardBadge(
+                    'epic',
+                    'owned',
+                    `You own "${epicOwnedTitle}" on Epic Games Store.`
+                );
+                if (badge) titleElement.appendChild(badge);
             }
 
             if (gogOwnedTitle) {
-                const badge =
-                    createCardBadge(
-                        'gog',
-                        'owned',
-                        `You own "${gogOwnedTitle}" through GOG.`
-                    );
-
-                if (badge) {
-                    titleElement.appendChild(badge);
-                }
+                const badge = createCardBadge(
+                    'gog',
+                    'owned',
+                    `You own "${gogOwnedTitle}" through GOG.`
+                );
+                if (badge) titleElement.appendChild(badge);
             }
 
             return;
         }
 
-        const appLink =
-            card.querySelector(
-                'a[href*="/app/"]'
-            );
-
+        const appLink = card.querySelector('a[href*="/app/"]');
         if (!appLink) return;
 
-        const computed =
-            window.getComputedStyle(card);
-
+        const computed = window.getComputedStyle(card);
         if (computed.position === 'static') {
             card.style.position = 'relative';
         }
 
-        const badges =
-            document.createElement('div');
-
-        badges.className =
-            'steam-platform-badges';
-
+        const badges = document.createElement('div');
+        badges.className = 'steam-platform-badges';
         badges.style.cssText = `
             position: absolute;
             top: 7px;
@@ -1437,13 +1435,11 @@
         `;
 
         if (epicOwnedTitle) {
-            const epicBadge =
-                createCardBadge(
-                    'epic',
-                    'owned',
-                    `You own "${epicOwnedTitle}" on Epic Games Store.`
-                );
-
+            const epicBadge = createCardBadge(
+                'epic',
+                'owned',
+                `You own "${epicOwnedTitle}" on Epic Games Store.`
+            );
             if (epicBadge) {
                 epicBadge.style.margin = '0';
                 badges.appendChild(epicBadge);
@@ -1451,13 +1447,11 @@
         }
 
         if (gogOwnedTitle) {
-            const gogBadge =
-                createCardBadge(
-                    'gog',
-                    'owned',
-                    `You own "${gogOwnedTitle}" through GOG.`
-                );
-
+            const gogBadge = createCardBadge(
+                'gog',
+                'owned',
+                `You own "${gogOwnedTitle}" through GOG.`
+            );
             if (gogBadge) {
                 gogBadge.style.margin = '0';
                 badges.appendChild(gogBadge);
@@ -1475,81 +1469,45 @@
         if (!card) return;
         if (isSteamPopup(card)) return;
 
-        const title =
-            getCardTitle(card);
-
+        const title = getCardTitle(card);
         if (!title) return;
 
-        const normalized =
-            getComparisonTitle(title);
-
+        const normalized = getComparisonTitle(title);
         if (!normalized) return;
 
         let epicOwnedTitle = null;
-
         if (isEpicCacheValid()) {
-            epicOwnedTitle =
-                findEpicOwnedTitle(normalized);
+            epicOwnedTitle = findEpicOwnedTitle(normalized);
         }
 
         let gogOwnedTitle = null;
-
         if (isGogCacheValid()) {
-            gogOwnedTitle =
-                findGogOwnedTitle(normalized);
+            gogOwnedTitle = findGogOwnedTitle(normalized);
         }
 
-        /*
-         * Not owned on either platform:
-         * show absolutely nothing.
-         */
-        if (
-            !epicOwnedTitle &&
-            !gogOwnedTitle
-        ) {
+        if (!epicOwnedTitle && !gogOwnedTitle) {
             return;
         }
 
-        insertCardBadges(
-            card,
-            epicOwnedTitle,
-            gogOwnedTitle
-        );
+        insertCardBadges(card, epicOwnedTitle, gogOwnedTitle);
     }
 
     function scanKnownSteamCards() {
-        const cards =
-            getKnownSteamCards();
-
+        const cards = getKnownSteamCards();
         for (const card of cards) {
             processSteamCard(card);
         }
     }
 
     function scanSteamAppLinks() {
-        const links =
-            document.querySelectorAll(
-                'a[href*="/app/"]'
-            );
-
+        const links = document.querySelectorAll('a[href*="/app/"]');
         const cards = new Set();
 
         links.forEach(function (link) {
-            if (isSteamPopup(link)) {
-                return;
-            }
+            if (isSteamPopup(link)) return;
+            if (link.closest('.apphub_AppName')) return;
 
-            if (
-                link.closest(
-                    '.apphub_AppName'
-                )
-            ) {
-                return;
-            }
-
-            const card =
-                getCardFromAppLink(link);
-
+            const card = getCardFromAppLink(link);
             if (card) {
                 cards.add(card);
             }
@@ -1562,7 +1520,6 @@
 
     function scanSteamCards() {
         if (!isSteamPage()) return;
-
         scanKnownSteamCards();
         scanSteamAppLinks();
     }
@@ -1579,38 +1536,28 @@
                 clearTimeout(timer);
             }
 
-            timer =
-                setTimeout(
-                    function () {
-                        timer = null;
-                        scanSteamCards();
-                    },
-                    200
-                );
+            timer = setTimeout(function () {
+                timer = null;
+                scanSteamCards();
+            }, 200);
         }
 
-        const observer =
-            new MutationObserver(
-                function (mutations) {
-                    for (const mutation of mutations) {
-                        if (
-                            mutation.addedNodes &&
-                            mutation.addedNodes.length
-                        ) {
-                            scheduleScan();
-                            return;
-                        }
-                    }
+        const observer = new MutationObserver(function (mutations) {
+            for (const mutation of mutations) {
+                if (
+                    mutation.addedNodes &&
+                    mutation.addedNodes.length
+                ) {
+                    scheduleScan();
+                    return;
                 }
-            );
-
-        observer.observe(
-            document.body,
-            {
-                childList: true,
-                subtree: true
             }
-        );
+        });
+
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
 
         setTimeout(scanSteamCards, 300);
         setTimeout(scanSteamCards, 700);
@@ -1621,280 +1568,709 @@
         setTimeout(scanSteamCards, 12000);
     }
 
+    function formatExactSyncDate(timestamp) {
+        if (!timestamp || timestamp <= 0) return 'Never';
+        const d = new Date(timestamp);
+        const pad = (n) => String(n).padStart(2, '0');
+        const day = pad(d.getDate());
+        const month = pad(d.getMonth() + 1);
+        const year = d.getFullYear();
+        const hours = pad(d.getHours());
+        const minutes = pad(d.getMinutes());
+        const seconds = pad(d.getSeconds());
+        return `${day}/${month}/${year}, ${hours}:${minutes}:${seconds}`;
+    }
+
     function createEpicSyncUI() {
-        if (
-            document.getElementById(
-                'steam-epic-sync-panel'
-            )
-        ) {
+        if (document.getElementById('steam-epic-sync-wrapper')) {
             return;
         }
 
-        if (!document.body) return;
-
-        const panel =
-            document.createElement('div');
-
-        panel.id =
-            'steam-epic-sync-panel';
-
-        panel.style.cssText = `
-            position: fixed;
-            right: 20px;
-            bottom: 20px;
-            z-index: 999999;
-            background: #202020;
-            color: #fff;
-            padding: 14px 16px;
-            border-radius: 8px;
-            box-shadow: 0 4px 18px rgba(0,0,0,.45);
-            font-family: Arial,sans-serif;
-            font-size: 14px;
-            min-width: 270px;
-        `;
-
-        const heading =
-            document.createElement('div');
-
-        heading.textContent =
-            'Steam → Epic';
-
-        heading.style.cssText = `
-            font-size: 16px;
-            font-weight: 700;
-            margin-bottom: 8px;
-        `;
-
-        const status =
-            document.createElement('div');
-
-        status.style.cssText = `
-            margin-bottom: 10px;
-            color: #bbb;
-        `;
-
-        const button =
-            document.createElement('button');
-
-        button.textContent =
-            'Sync Epic Library';
-
-        button.style.cssText = `
-            border: 0;
-            border-radius: 5px;
-            padding: 7px 12px;
-            cursor: pointer;
-            font-weight: 600;
-        `;
-
-        button.addEventListener(
-            'click',
-            function () {
-                button.disabled = true;
-                status.textContent =
-                    'Starting sync...';
-
-                syncEpicLibrary(
-                    function (message) {
-                        status.textContent =
-                            message;
-                    },
-
-                    function (library) {
-                        status.textContent =
-                            `Epic library synced: ${library.length} titles.`;
-
-                        button.disabled = false;
-
-                        checkGamePage();
-                        scanSteamCards();
-                    },
-
-                    function (error) {
-                        status.textContent =
-                            `Sync failed: ${error}`;
-
-                        button.disabled = false;
-                    }
-                );
+        function findPurchasesHeader() {
+            const candidates = document.querySelectorAll(
+                'h1, h2, h3, [class*="heading"], [class*="Heading"], [class*="title"], [class*="Title"]'
+            );
+            for (const el of candidates) {
+                if (/^purchases/i.test(el.textContent.trim())) {
+                    return el;
+                }
             }
-        );
-
-        panel.appendChild(heading);
-        panel.appendChild(status);
-        panel.appendChild(button);
-
-        document.body.appendChild(panel);
-
-        const syncTime =
-            getEpicSyncTime();
-
-        if (!syncTime) {
-            status.textContent =
-                'No Epic library synced yet.';
-            return;
+            return document.querySelector('h1') || document.querySelector('[data-component="Heading"]');
         }
 
-        const age =
-            Date.now() - syncTime;
+        const headerEl = findPurchasesHeader();
+        const targetParent = headerEl ? headerEl.parentElement : document.body;
+        if (!targetParent && !document.body) return;
 
-        if (age > CACHE_DURATION) {
-            status.textContent =
-                'Epic library needs updating.';
+        const wrapper = document.createElement('span');
+        wrapper.id = 'steam-epic-sync-wrapper';
+
+        if (headerEl) {
+            headerEl.style.display = 'inline-flex';
+            headerEl.style.alignItems = 'center';
+            headerEl.style.flexWrap = 'wrap';
+            wrapper.style.cssText = `
+                position: relative;
+                display: inline-flex;
+                align-items: center;
+                margin-left: 12px;
+                vertical-align: middle;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+                z-index: 99999;
+            `;
         } else {
-            const days =
-                Math.floor(
-                    age / 86400000
-                );
+            wrapper.style.cssText = `
+                position: fixed;
+                right: 20px;
+                bottom: 20px;
+                display: inline-flex;
+                align-items: center;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+                z-index: 999999;
+            `;
+        }
 
-            status.textContent =
-                days === 0
-                    ? 'Library synced today.'
-                    : `Library synced ${days} day${
-                        days === 1 ? '' : 's'
-                    } ago.`;
+        // Trigger Button: "Sync to Steam"
+        const triggerBtn = document.createElement('button');
+        triggerBtn.id = 'steam-epic-sync-trigger';
+        triggerBtn.type = 'button';
+        triggerBtn.textContent = 'Sync to Steam';
+        triggerBtn.style.cssText = `
+            background: #0b76e0;
+            color: #ffffff;
+            border: 1px solid rgba(0,0,0,0.25);
+            border-radius: 4px;
+            padding: 0 14px;
+            height: 32px;
+            box-sizing: border-box;
+            font-size: 13px;
+            font-weight: 700;
+            cursor: pointer;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+            text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+            transition: background 0.15s ease, transform 0.1s ease;
+            user-select: none;
+            white-space: nowrap;
+            line-height: 1;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            vertical-align: middle;
+        `;
+
+        triggerBtn.addEventListener('mouseenter', function () {
+            triggerBtn.style.background = '#0961b8';
+        });
+        triggerBtn.addEventListener('mouseleave', function () {
+            triggerBtn.style.background = '#0b76e0';
+        });
+
+        // Compressed Popup Box
+        const popup = document.createElement('div');
+        popup.id = 'steam-epic-sync-panel';
+        popup.style.cssText = `
+            position: absolute;
+            top: calc(100% + 6px);
+            left: 0;
+            background: #111822;
+            color: #ffffff;
+            padding: 12px 14px 10px 14px;
+            border-radius: 6px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.75);
+            border: 1px solid #283545;
+            font-size: 12px;
+            min-width: 270px;
+            max-width: 320px;
+            display: none;
+            box-sizing: border-box;
+            z-index: 100000;
+            line-height: 1.4;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+        `;
+
+        const title = document.createElement('div');
+        title.textContent = 'Steam Epic Ownership';
+        title.style.cssText = `
+            font-size: 14px;
+            font-weight: 700;
+            color: #ffffff;
+            margin-bottom: 2px;
+        `;
+
+        const status = document.createElement('div');
+        status.style.cssText = `
+            color: #c0c6d0;
+            font-size: 12px;
+            margin-bottom: 10px;
+        `;
+
+        const btnRow = document.createElement('div');
+        btnRow.style.cssText = `
+            display: flex;
+            gap: 8px;
+            margin-bottom: 10px;
+        `;
+
+        const quickBtn = document.createElement('button');
+        quickBtn.type = 'button';
+        quickBtn.textContent = 'Quick Sync';
+        quickBtn.title = 'Syncs only new games since your last sync (Fast)';
+        quickBtn.style.cssText = `
+            flex: 1;
+            background: #0b76e0;
+            color: #ffffff;
+            border: 0;
+            border-radius: 4px;
+            padding: 7px 12px;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            text-align: center;
+            transition: background 0.15s ease;
+        `;
+        quickBtn.addEventListener('mouseenter', function () {
+            quickBtn.style.background = '#0961b8';
+        });
+        quickBtn.addEventListener('mouseleave', function () {
+            quickBtn.style.background = '#0b76e0';
+        });
+
+        const fullBtn = document.createElement('button');
+        fullBtn.type = 'button';
+        fullBtn.textContent = 'Full Sync';
+        fullBtn.title = 'Performs a full scan of all purchases';
+        fullBtn.style.cssText = `
+            flex: 1;
+            background: #0b76e0;
+            color: #ffffff;
+            border: 0;
+            border-radius: 4px;
+            padding: 7px 12px;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            text-align: center;
+            transition: background 0.15s ease;
+        `;
+        fullBtn.addEventListener('mouseenter', function () {
+            fullBtn.style.background = '#0961b8';
+        });
+        fullBtn.addEventListener('mouseleave', function () {
+            fullBtn.style.background = '#0b76e0';
+        });
+
+        const ownedInfo = document.createElement('div');
+        ownedInfo.style.cssText = `
+            color: #5bb35f;
+            font-weight: 700;
+            font-size: 12px;
+            margin-bottom: 3px;
+        `;
+
+        const lastPurchaseInfo = document.createElement('div');
+        lastPurchaseInfo.style.cssText = `
+            color: #e69138;
+            font-size: 11px;
+            margin-bottom: 3px;
+            word-break: break-word;
+            display: none;
+        `;
+
+        const lastSyncInfo = document.createElement('div');
+        lastSyncInfo.style.cssText = `
+            color: #94a3b8;
+            font-size: 11px;
+            margin-bottom: 2px;
+        `;
+
+        const footerRow = document.createElement('div');
+        footerRow.style.cssText = `
+            display: flex;
+            justify-content: flex-end;
+            margin-top: 4px;
+        `;
+
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.textContent = '✕';
+        closeBtn.title = 'Close';
+        closeBtn.style.cssText = `
+            background: #252e3b;
+            border: 1px solid #3b4758;
+            color: #cbd5e1;
+            border-radius: 4px;
+            width: 22px;
+            height: 22px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            cursor: pointer;
+            transition: background 0.15s ease, color 0.15s ease;
+        `;
+        closeBtn.addEventListener('mouseenter', function () {
+            closeBtn.style.background = '#323e50';
+            closeBtn.style.color = '#ffffff';
+        });
+        closeBtn.addEventListener('mouseleave', function () {
+            closeBtn.style.background = '#252e3b';
+            closeBtn.style.color = '#cbd5e1';
+        });
+        closeBtn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            popup.style.display = 'none';
+        });
+
+        function updateDisplay() {
+            const syncTime = getEpicSyncTime();
+            const library = getEpicLibrary();
+            status.textContent = library.length > 0 ? 'Epic library is loaded.' : 'No library synced yet.';
+            ownedInfo.textContent = `Owned titles: ${library.length}`;
+
+            if (library.length > 0 && library[0] && library[0].original) {
+                lastPurchaseInfo.textContent = `Last purchase: ${library[0].original}`;
+                lastPurchaseInfo.style.display = 'block';
+            } else {
+                lastPurchaseInfo.style.display = 'none';
+            }
+
+            lastSyncInfo.textContent = `Last sync: ${formatExactSyncDate(syncTime)}`;
+        }
+
+        function runSync(isFull) {
+            quickBtn.disabled = true;
+            fullBtn.disabled = true;
+            quickBtn.style.opacity = '0.6';
+            fullBtn.style.opacity = '0.6';
+
+            status.textContent = `Syncing Epic library (${isFull ? 'Full Mode' : 'Quick Mode'})...`;
+
+            syncEpicLibrary(
+                {
+                    isFullSync: isFull,
+                    onProgress: function (msg) {
+                        status.textContent = msg;
+                    },
+                    onSuccess: function (library, newCount, isSmart) {
+                        if (isSmart) {
+                            status.textContent = `Quick sync complete! Added ${newCount} new games.`;
+                        } else {
+                            status.textContent = `Full sync complete! Total: ${library.length} games.`;
+                        }
+                        ownedInfo.textContent = `Owned titles: ${library.length}`;
+                        if (library.length > 0 && library[0] && library[0].original) {
+                            lastPurchaseInfo.textContent = `Last purchase: ${library[0].original}`;
+                            lastPurchaseInfo.style.display = 'block';
+                        }
+                        lastSyncInfo.textContent = `Last sync: ${formatExactSyncDate(Date.now())}`;
+
+                        quickBtn.disabled = false;
+                        fullBtn.disabled = false;
+                        quickBtn.style.opacity = '1';
+                        fullBtn.style.opacity = '1';
+                    },
+                    onError: function (err) {
+                        status.textContent = `Sync failed: ${err}`;
+                        quickBtn.disabled = false;
+                        fullBtn.disabled = false;
+                        quickBtn.style.opacity = '1';
+                        fullBtn.style.opacity = '1';
+                    }
+                }
+            );
+        }
+
+        quickBtn.addEventListener('click', function () {
+            runSync(false);
+        });
+
+        fullBtn.addEventListener('click', function () {
+            runSync(true);
+        });
+
+        triggerBtn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            const isHidden = popup.style.display === 'none' || !popup.style.display;
+            popup.style.display = isHidden ? 'block' : 'none';
+            if (isHidden) {
+                updateDisplay();
+            }
+        });
+
+        document.addEventListener('click', function (e) {
+            if (!wrapper.contains(e.target)) {
+                popup.style.display = 'none';
+            }
+        });
+
+        updateDisplay();
+
+        btnRow.appendChild(quickBtn);
+        btnRow.appendChild(fullBtn);
+
+        footerRow.appendChild(closeBtn);
+
+        popup.appendChild(title);
+        popup.appendChild(status);
+        popup.appendChild(btnRow);
+        popup.appendChild(ownedInfo);
+        popup.appendChild(lastPurchaseInfo);
+        popup.appendChild(lastSyncInfo);
+        popup.appendChild(footerRow);
+
+        wrapper.appendChild(triggerBtn);
+        wrapper.appendChild(popup);
+
+        if (headerEl) {
+            headerEl.appendChild(wrapper);
+        } else {
+            document.body.appendChild(wrapper);
         }
     }
 
     function createGogSyncUI() {
-        if (
-            document.getElementById(
-                'steam-gog-sync-panel'
-            )
-        ) {
+        if (document.getElementById('steam-gog-sync-wrapper')) {
             return;
         }
 
-        if (!document.body) return;
-
-        const panel =
-            document.createElement('div');
-
-        panel.id =
-            'steam-gog-sync-panel';
-
-        panel.style.cssText = `
-            position: fixed;
-            right: 20px;
-            bottom: 20px;
-            z-index: 999999;
-            background: #202020;
-            color: #fff;
-            padding: 14px 16px;
-            border-radius: 8px;
-            box-shadow: 0 4px 18px rgba(0,0,0,.45);
-            font-family: Arial,sans-serif;
-            font-size: 14px;
-            min-width: 270px;
-        `;
-
-        const heading =
-            document.createElement('div');
-
-        heading.textContent =
-            'Steam → GOG';
-
-        heading.style.cssText = `
-            font-size: 16px;
-            font-weight: 700;
-            margin-bottom: 8px;
-        `;
-
-        const status =
-            document.createElement('div');
-
-        status.style.cssText = `
-            margin-bottom: 10px;
-            color: #bbb;
-        `;
-
-        const button =
-            document.createElement('button');
-
-        button.textContent =
-            'Sync GOG Library';
-
-        button.style.cssText = `
-            border: 0;
-            border-radius: 5px;
-            padding: 7px 12px;
-            cursor: pointer;
-            font-weight: 600;
-        `;
-
-        button.addEventListener(
-            'click',
-            async function () {
-                button.disabled = true;
-                status.textContent =
-                    'Starting sync...';
-
-                try {
-                    const library =
-                        await syncGogLibrary(
-                            function (message) {
-                                status.textContent =
-                                    message;
-                            }
-                        );
-
-                    status.textContent =
-                        `GOG library synced: ${library.length} titles.`;
-
-                    button.disabled = false;
-
-                    checkGamePage();
-                    scanSteamCards();
-
-                } catch (error) {
-                    console.error(
-                        '[Steam → GOG] Sync failed:',
-                        error
-                    );
-
-                    status.textContent =
-                        `Sync failed: ${
-                            error.message || error
-                        }`;
-
-                    button.disabled = false;
+        function findCollectionHeader() {
+            const candidates = document.querySelectorAll(
+                '.account__header, .account-header, .collection-header, .header__dropdown, [class*="collection"], [class*="Collection"], h1, h2'
+            );
+            for (const el of candidates) {
+                if (/my collection/i.test(el.textContent.trim())) {
+                    return el;
                 }
             }
-        );
-
-        panel.appendChild(heading);
-        panel.appendChild(status);
-        panel.appendChild(button);
-
-        document.body.appendChild(panel);
-
-        const syncTime =
-            getGogSyncTime();
-
-        if (!syncTime) {
-            status.textContent =
-                'No GOG library synced yet.';
-            return;
+            const all = document.querySelectorAll('*');
+            for (const el of all) {
+                if (el.children.length === 0 && /my collection/i.test(el.textContent.trim())) {
+                    return el.parentElement || el;
+                }
+            }
+            return document.querySelector('.account-nav') || document.querySelector('.account__header') || document.querySelector('h1');
         }
 
-        const age =
-            Date.now() - syncTime;
+        const headerEl = findCollectionHeader();
+        if (!headerEl && !document.body) return;
 
-        if (age > CACHE_DURATION) {
-            status.textContent =
-                'GOG library needs updating.';
+        const wrapper = document.createElement('span');
+        wrapper.id = 'steam-gog-sync-wrapper';
+
+        if (headerEl) {
+            headerEl.style.display = 'inline-flex';
+            headerEl.style.alignItems = 'center';
+            headerEl.style.flexWrap = 'wrap';
+            wrapper.style.cssText = `
+                position: relative;
+                display: inline-flex;
+                align-items: center;
+                margin-left: 12px;
+                vertical-align: middle;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+                z-index: 99999;
+            `;
         } else {
-            const days =
-                Math.floor(
-                    age / 86400000
-                );
+            wrapper.style.cssText = `
+                position: fixed;
+                right: 20px;
+                bottom: 20px;
+                display: inline-flex;
+                align-items: center;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+                z-index: 999999;
+            `;
+        }
 
-            status.textContent =
-                days === 0
-                    ? 'Library synced today.'
-                    : `Library synced ${days} day${
-                        days === 1 ? '' : 's'
-                    } ago.`;
+        // Trigger Button: "Sync to Steam"
+        const triggerBtn = document.createElement('button');
+        triggerBtn.id = 'steam-gog-sync-trigger';
+        triggerBtn.type = 'button';
+        triggerBtn.textContent = 'Sync to Steam';
+        triggerBtn.style.cssText = `
+            background: #7a35d9;
+            color: #ffffff;
+            border: 1px solid rgba(0,0,0,0.25);
+            border-radius: 4px;
+            padding: 0 14px;
+            height: 32px;
+            box-sizing: border-box;
+            font-size: 13px;
+            font-weight: 700;
+            cursor: pointer;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+            text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+            transition: background 0.15s ease, transform 0.1s ease;
+            user-select: none;
+            white-space: nowrap;
+            line-height: 1;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            vertical-align: middle;
+        `;
+
+        triggerBtn.addEventListener('mouseenter', function () {
+            triggerBtn.style.background = '#6928c7';
+        });
+        triggerBtn.addEventListener('mouseleave', function () {
+            triggerBtn.style.background = '#7a35d9';
+        });
+
+        // Compressed Popup Box
+        const popup = document.createElement('div');
+        popup.id = 'steam-gog-sync-panel';
+        popup.style.cssText = `
+            position: absolute;
+            top: calc(100% + 6px);
+            left: 0;
+            background: #111822;
+            color: #ffffff;
+            padding: 12px 14px 10px 14px;
+            border-radius: 6px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.75);
+            border: 1px solid #3d2f52;
+            font-size: 12px;
+            min-width: 270px;
+            max-width: 320px;
+            display: none;
+            box-sizing: border-box;
+            z-index: 100000;
+            line-height: 1.4;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+        `;
+
+        const title = document.createElement('div');
+        title.textContent = 'Steam GOG Ownership';
+        title.style.cssText = `
+            font-size: 14px;
+            font-weight: 700;
+            color: #ffffff;
+            margin-bottom: 2px;
+        `;
+
+        const status = document.createElement('div');
+        status.style.cssText = `
+            color: #c0c6d0;
+            font-size: 12px;
+            margin-bottom: 10px;
+        `;
+
+        const btnRow = document.createElement('div');
+        btnRow.style.cssText = `
+            display: flex;
+            gap: 8px;
+            margin-bottom: 10px;
+        `;
+
+        const quickBtn = document.createElement('button');
+        quickBtn.type = 'button';
+        quickBtn.textContent = 'Quick Sync';
+        quickBtn.title = 'Syncs only new games since your last sync (Fast)';
+        quickBtn.style.cssText = `
+            flex: 1;
+            background: #7a35d9;
+            color: #ffffff;
+            border: 0;
+            border-radius: 4px;
+            padding: 7px 12px;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            text-align: center;
+            transition: background 0.15s ease;
+        `;
+        quickBtn.addEventListener('mouseenter', function () {
+            quickBtn.style.background = '#6928c7';
+        });
+        quickBtn.addEventListener('mouseleave', function () {
+            quickBtn.style.background = '#7a35d9';
+        });
+
+        const fullBtn = document.createElement('button');
+        fullBtn.type = 'button';
+        fullBtn.textContent = 'Full Sync';
+        fullBtn.title = 'Performs a full scan of all library pages';
+        fullBtn.style.cssText = `
+            flex: 1;
+            background: #7a35d9;
+            color: #ffffff;
+            border: 0;
+            border-radius: 4px;
+            padding: 7px 12px;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            text-align: center;
+            transition: background 0.15s ease;
+        `;
+        fullBtn.addEventListener('mouseenter', function () {
+            fullBtn.style.background = '#6928c7';
+        });
+        fullBtn.addEventListener('mouseleave', function () {
+            fullBtn.style.background = '#7a35d9';
+        });
+
+        const ownedInfo = document.createElement('div');
+        ownedInfo.style.cssText = `
+            color: #5bb35f;
+            font-weight: 700;
+            font-size: 12px;
+            margin-bottom: 3px;
+        `;
+
+        const lastPurchaseInfo = document.createElement('div');
+        lastPurchaseInfo.style.cssText = `
+            color: #e69138;
+            font-size: 11px;
+            margin-bottom: 3px;
+            word-break: break-word;
+            display: none;
+        `;
+
+        const lastSyncInfo = document.createElement('div');
+        lastSyncInfo.style.cssText = `
+            color: #94a3b8;
+            font-size: 11px;
+            margin-bottom: 2px;
+        `;
+
+        const footerRow = document.createElement('div');
+        footerRow.style.cssText = `
+            display: flex;
+            justify-content: flex-end;
+            margin-top: 4px;
+        `;
+
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.textContent = '✕';
+        closeBtn.title = 'Close';
+        closeBtn.style.cssText = `
+            background: #252e3b;
+            border: 1px solid #3b4758;
+            color: #cbd5e1;
+            border-radius: 4px;
+            width: 22px;
+            height: 22px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            cursor: pointer;
+            transition: background 0.15s ease, color 0.15s ease;
+        `;
+        closeBtn.addEventListener('mouseenter', function () {
+            closeBtn.style.background = '#323e50';
+            closeBtn.style.color = '#ffffff';
+        });
+        closeBtn.addEventListener('mouseleave', function () {
+            closeBtn.style.background = '#252e3b';
+            closeBtn.style.color = '#cbd5e1';
+        });
+        closeBtn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            popup.style.display = 'none';
+        });
+
+        function updateDisplay() {
+            const syncTime = getGogSyncTime();
+            const library = getGogLibrary();
+            status.textContent = library.length > 0 ? 'GOG library is loaded.' : 'No library synced yet.';
+            ownedInfo.textContent = `Owned titles: ${library.length}`;
+
+            if (library.length > 0 && library[0] && library[0].original) {
+                lastPurchaseInfo.textContent = `Last purchase: ${library[0].original}`;
+                lastPurchaseInfo.style.display = 'block';
+            } else {
+                lastPurchaseInfo.style.display = 'none';
+            }
+
+            lastSyncInfo.textContent = `Last sync: ${formatExactSyncDate(syncTime)}`;
+        }
+
+        async function runSync(isFull) {
+            quickBtn.disabled = true;
+            fullBtn.disabled = true;
+            quickBtn.style.opacity = '0.6';
+            fullBtn.style.opacity = '0.6';
+
+            status.textContent = `Syncing GOG library (${isFull ? 'Full Mode' : 'Quick Mode'})...`;
+
+            try {
+                const res = await syncGogLibrary({
+                    isFullSync: isFull,
+                    onProgress: function (msg) {
+                        status.textContent = msg;
+                    }
+                });
+
+                if (res.isSmart) {
+                    status.textContent = `Quick sync complete! Added ${res.newCount} new games.`;
+                } else {
+                    status.textContent = `Full sync complete! Total: ${res.library.length} games.`;
+                }
+                ownedInfo.textContent = `Owned titles: ${res.library.length}`;
+                if (res.library.length > 0 && res.library[0] && res.library[0].original) {
+                    lastPurchaseInfo.textContent = `Last purchase: ${res.library[0].original}`;
+                    lastPurchaseInfo.style.display = 'block';
+                }
+                lastSyncInfo.textContent = `Last sync: ${formatExactSyncDate(Date.now())}`;
+            } catch (err) {
+                status.textContent = `Sync failed: ${err.message || err}`;
+            } finally {
+                quickBtn.disabled = false;
+                fullBtn.disabled = false;
+                quickBtn.style.opacity = '1';
+                fullBtn.style.opacity = '1';
+            }
+        }
+
+        quickBtn.addEventListener('click', function () {
+            runSync(false);
+        });
+
+        fullBtn.addEventListener('click', function () {
+            runSync(true);
+        });
+
+        triggerBtn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            const isHidden = popup.style.display === 'none' || !popup.style.display;
+            popup.style.display = isHidden ? 'block' : 'none';
+            if (isHidden) {
+                updateDisplay();
+            }
+        });
+
+        document.addEventListener('click', function (e) {
+            if (!wrapper.contains(e.target)) {
+                popup.style.display = 'none';
+            }
+        });
+
+        updateDisplay();
+
+        btnRow.appendChild(quickBtn);
+        btnRow.appendChild(fullBtn);
+
+        footerRow.appendChild(closeBtn);
+
+        popup.appendChild(title);
+        popup.appendChild(status);
+        popup.appendChild(btnRow);
+        popup.appendChild(ownedInfo);
+        popup.appendChild(lastPurchaseInfo);
+        popup.appendChild(lastSyncInfo);
+        popup.appendChild(footerRow);
+
+        wrapper.appendChild(triggerBtn);
+        wrapper.appendChild(popup);
+
+        if (headerEl) {
+            headerEl.appendChild(wrapper);
+        } else {
+            document.body.appendChild(wrapper);
         }
     }
 
@@ -1904,25 +2280,41 @@
     );
 
     if (isEpicPage()) {
-        if (document.body) {
+        const initEpic = function () {
             createEpicSyncUI();
+            const observer = new MutationObserver(function () {
+                if (!document.getElementById('steam-epic-sync-wrapper')) {
+                    createEpicSyncUI();
+                }
+            });
+            if (document.body) {
+                observer.observe(document.body, { childList: true, subtree: true });
+            }
+        };
+
+        if (document.body) {
+            initEpic();
         } else {
-            window.addEventListener(
-                'DOMContentLoaded',
-                createEpicSyncUI,
-                { once: true }
-            );
+            window.addEventListener('DOMContentLoaded', initEpic, { once: true });
         }
 
     } else if (isGogPage()) {
-        if (document.body) {
+        const initGog = function () {
             createGogSyncUI();
+            const observer = new MutationObserver(function () {
+                if (!document.getElementById('steam-gog-sync-wrapper')) {
+                    createGogSyncUI();
+                }
+            });
+            if (document.body) {
+                observer.observe(document.body, { childList: true, subtree: true });
+            }
+        };
+
+        if (document.body) {
+            initGog();
         } else {
-            window.addEventListener(
-                'DOMContentLoaded',
-                createGogSyncUI,
-                { once: true }
-            );
+            window.addEventListener('DOMContentLoaded', initGog, { once: true });
         }
 
     } else if (isSteamPage()) {
@@ -1962,7 +2354,7 @@
                     function () {
                         if (
                             !document.getElementById(
-                                'steam-epic-indicator'
+                                'steam-ownership-indicator'
                             )
                         ) {
                             captureOriginalSteamTitle();
