@@ -9,10 +9,13 @@ A Tampermonkey userscript that shows Epic Games Store and GOG ownership directly
   - If you do not own the game on either store, displays a single `✕`.
   - Clicking any store icon redirects directly to a search for the game on that store (Epic Games Store or GOG).
   - Includes a dropdown down-arrow (`▼`) before `Owned:` with quick links to update your Epic and GOG databases and view last sync timestamps.
+- **Edition Detection & Info Tooltips (`(?)`)**: Adds an interactive `(?)` info button next to store badges. Hovering over it (or clicking) displays a floating dark-mode tooltip listing the exact owned edition(s) and version(s) in your library (e.g. *Complete Edition*, *Director's Cut*, *Game of the Year*, *Deluxe Edition*, *Standard Edition*).
+- **Special Characters & Separator Normalization**: Properly normalizes symbols, trademark characters (`®`, `™`, `©`), and word separators (`_`, `/`, `\`, `|`, `-`). Fixes cross-store matching for games like `Watch_Dogs® 2` vs `Watch Dogs 2` with two-tier fallback matching (exact + collapsed whitespace).
+- **Multi-Edition Ownership Support**: Automatically detects and groups all owned editions of a title from your Epic or GOG library so you can see every version you own at a glance.
 - **Smart Incremental Sync (Quick Sync)**: Fast incremental sync mode that stops scanning when it reaches previously synced purchases, merging newly acquired games automatically.
 - **Full Sync**: Option to perform a full scan of all library pages whenever needed.
 - **Header-Integrated Sync Buttons**: Adds a sleek **`Sync to Steam`** button next to **Purchases** on Epic Games Store and **My Collection** on GOG, with a compact dropdown popup displaying owned titles, last purchase, and exact last sync timestamp.
-- **Steam Cards Support**: Shows small green `Epic ✓` and `GOG ✓` badges on search results, recommendations, and similar-game cards.
+- **Steam Cards Support**: Shows small green `Epic ✓` and `GOG ✓` badges on search results, recommendations, and similar-game cards with detailed owned edition tooltips.
 - **Local Storage Caching**: Caches Epic and GOG ownership data locally using Tampermonkey storage.
 - **Privacy Friendly**: Uses the browser's existing Epic and GOG login sessions without transmitting data to third parties.
 

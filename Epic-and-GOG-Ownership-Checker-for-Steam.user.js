@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Epic and GOG Ownership Checker for Steam
 // @namespace    https://steam-multi-ownership.local/
-// @version      4.0
+// @version      4.1
 // @author       Theodoros OhYeah (enigma9q), ChatGPT & Antigravity
 // @description  Shows Epic and GOG ownership on Steam game pages, search results, library cards, similar games and recommendation cards
 // @match        https://store.steampowered.com/*
@@ -72,16 +72,20 @@
             .replace(/[™®©]/g, '')
             .replace(/&/g, ' and ')
             .replace(/[’']/g, '')
-            .replace(/[:\-–—]/g, ' ')
+            .replace(/[:\-–—_/\\|]/g, ' ')
             .replace(/[^\p{L}\p{N}\s]/gu, '')
             .replace(/\s+/g, ' ')
             .trim();
     }
 
+    function normalizeCollapsed(title) {
+        return normalizeTitle(title).replace(/\s+/g, '');
+    }
+
     function removePurchasePrefix(title) {
         return title
-            .replace(/^purchased\s+/i, '')
-            .replace(/^purchase\s+/i, '')
+            .replace(/^purchased[:\-–—\s]+/i, '')
+            .replace(/^purchase[:\-–—\s]+/i, '')
             .trim();
     }
 
@@ -93,13 +97,18 @@
             ' game of the year',
             ' goty edition',
             ' goty',
+            ' game of the yorha edition',
             ' complete edition',
+            ' complete collection',
             ' complete',
             ' ultimate edition',
             ' ultimate',
+            ' digital deluxe edition',
+            ' digital deluxe',
             ' deluxe edition',
             ' deluxe',
             ' definitive edition',
+            ' definitive experience',
             ' definitive',
             ' enhanced edition',
             ' enhanced',
@@ -109,6 +118,7 @@
             ' gold',
             ' platinum edition',
             ' platinum',
+            ' diamond edition',
             ' premium edition',
             ' premium',
             ' founders edition',
@@ -118,7 +128,25 @@
             ' anniversary edition',
             ' anniversary',
             ' special edition',
-            ' special'
+            ' special',
+            ' collectors edition',
+            ' collector edition',
+            ' collectors',
+            ' directors cut',
+            ' director cut',
+            ' final cut',
+            ' royal edition',
+            ' imperial edition',
+            ' legacy edition',
+            ' master collection',
+            ' remastered',
+            ' remaster',
+            ' year one edition',
+            ' year 1 edition',
+            ' day one edition',
+            ' launch edition',
+            ' vr edition',
+            ' vr'
         ];
 
         let changed = true;
@@ -135,6 +163,12 @@
             }
         }
 
+        // Generic "<Word> edition" removal if title has at least one other word remaining
+        const genericEditionMatch = result.match(/^(.*\b[a-z0-9]+)\s+([a-z0-9]+)\s+edition$/i);
+        if (genericEditionMatch && genericEditionMatch[1].trim().length > 1) {
+            result = genericEditionMatch[1].trim();
+        }
+
         return result;
     }
 
@@ -143,6 +177,97 @@
         result = removePurchasePrefix(result);
         result = removeEditionSuffix(result);
         return result;
+    }
+
+    function detectEditionName(originalTitle, baseComparisonTitle) {
+        if (!originalTitle) return null;
+        const norm = normalizeTitle(originalTitle);
+
+        const editionPatterns = [
+            { pattern: /\bgame\s+of\s+the\s+year(\s+edition)?\b|\bgoty(\s+edition)?\b/i, name: 'Game of the Year Edition' },
+            { pattern: /\bgame\s+of\s+the\s+yorha(\s+edition)?\b/i, name: 'Game of the YoRHa Edition' },
+            { pattern: /\bcomplete\s+edition\b|\bcomplete\s+collection\b/i, name: 'Complete Edition' },
+            { pattern: /\bultimate\s+edition\b/i, name: 'Ultimate Edition' },
+            { pattern: /\bdigital\s+deluxe(\s+edition)?\b/i, name: 'Digital Deluxe Edition' },
+            { pattern: /\bdeluxe\s+edition\b/i, name: 'Deluxe Edition' },
+            { pattern: /\bdefinitive\s+edition\b|\bdefinitive\s+experience\b/i, name: 'Definitive Edition' },
+            { pattern: /\benhanced\s+edition\b/i, name: 'Enhanced Edition' },
+            { pattern: /\bdirector['’]?s\s+cut\b/i, name: "Director's Cut" },
+            { pattern: /\bfinal\s+cut\b/i, name: 'Final Cut' },
+            { pattern: /\bcollector['’]?s\s+edition\b/i, name: "Collector's Edition" },
+            { pattern: /\blegendary\s+edition\b/i, name: 'Legendary Edition' },
+            { pattern: /\bgold\s+edition\b/i, name: 'Gold Edition' },
+            { pattern: /\bplatinum\s+edition\b/i, name: 'Platinum Edition' },
+            { pattern: /\bpremium\s+edition\b/i, name: 'Premium Edition' },
+            { pattern: /\banniversary\s+edition\b/i, name: 'Anniversary Edition' },
+            { pattern: /\bspecial\s+edition\b/i, name: 'Special Edition' },
+            { pattern: /\broyal\s+edition\b/i, name: 'Royal Edition' },
+            { pattern: /\bimperial\s+edition\b/i, name: 'Imperial Edition' },
+            { pattern: /\bstandard\s+edition\b/i, name: 'Standard Edition' },
+            { pattern: /\bfounders\s+edition\b/i, name: 'Founders Edition' },
+            { pattern: /\bremastered\b|\bremaster\b/i, name: 'Remastered' },
+            { pattern: /\bvr\s+edition\b|\b\(vr\)\b/i, name: 'VR Edition' }
+        ];
+
+        for (const ep of editionPatterns) {
+            if (ep.pattern.test(originalTitle) || ep.pattern.test(norm)) {
+                return ep.name;
+            }
+        }
+
+        const genericMatch = originalTitle.match(/\b([A-Za-z0-9]+)\s+Edition\b/i);
+        if (genericMatch) {
+            const word = genericMatch[1];
+            return `${word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()} Edition`;
+        }
+
+        if (baseComparisonTitle && getComparisonTitle(originalTitle) === baseComparisonTitle) {
+            return null;
+        }
+
+        return null;
+    }
+
+    function findLibraryMatches(library, targetComparisonTitle) {
+        if (!Array.isArray(library) || library.length === 0 || !targetComparisonTitle) {
+            return [];
+        }
+
+        const targetNorm = targetComparisonTitle;
+        const targetCollapsed = targetNorm.replace(/\s+/g, '');
+        const matches = [];
+        const seenOriginals = new Set();
+
+        for (const entry of library) {
+            const original =
+                typeof entry === 'string'
+                    ? entry
+                    : (entry.original || entry.normalized || '');
+
+            if (!original || seenOriginals.has(original)) continue;
+
+            const entryNorm = getComparisonTitle(original);
+            const entryCollapsed = entryNorm.replace(/\s+/g, '');
+
+            let matchType = null;
+            if (entryNorm === targetNorm) {
+                matchType = 'exact';
+            } else if (targetCollapsed && entryCollapsed === targetCollapsed) {
+                matchType = 'collapsed';
+            }
+
+            if (matchType) {
+                seenOriginals.add(original);
+                const edition = detectEditionName(original, targetNorm);
+                matches.push({
+                    original: original,
+                    edition: edition,
+                    matchType: matchType
+                });
+            }
+        }
+
+        return matches;
     }
 
     function getEpicLibrary() {
@@ -165,25 +290,14 @@
         );
     }
 
+    function findEpicOwnedMatches(comparisonTitle) {
+        if (!isEpicCacheValid()) return [];
+        return findLibraryMatches(getEpicLibrary(), comparisonTitle);
+    }
+
     function findEpicOwnedTitle(normalizedTitle) {
-        if (!isEpicCacheValid()) return null;
-
-        const library = getEpicLibrary();
-
-        for (const entry of library) {
-            const epicTitle =
-                typeof entry === 'string'
-                    ? getComparisonTitle(entry)
-                    : entry.normalized;
-
-            if (epicTitle === normalizedTitle) {
-                return typeof entry === 'string'
-                    ? entry
-                    : entry.original;
-            }
-        }
-
-        return null;
+        const matches = findEpicOwnedMatches(normalizedTitle);
+        return matches.length > 0 ? matches[0].original : null;
     }
 
     function getGogLibrary() {
@@ -206,25 +320,14 @@
         );
     }
 
+    function findGogOwnedMatches(comparisonTitle) {
+        if (!isGogCacheValid()) return [];
+        return findLibraryMatches(getGogLibrary(), comparisonTitle);
+    }
+
     function findGogOwnedTitle(normalizedTitle) {
-        if (!isGogCacheValid()) return null;
-
-        const library = getGogLibrary();
-
-        for (const entry of library) {
-            const gogTitle =
-                typeof entry === 'string'
-                    ? getComparisonTitle(entry)
-                    : entry.normalized;
-
-            if (gogTitle === normalizedTitle) {
-                return typeof entry === 'string'
-                    ? entry
-                    : entry.original;
-            }
-        }
-
-        return null;
+        const matches = findGogOwnedMatches(normalizedTitle);
+        return matches.length > 0 ? matches[0].original : null;
     }
 
     function formatSyncDate(timestamp) {
@@ -728,13 +831,193 @@
         return originalSteamTitle;
     }
 
+    function createEditionInfoIcon(platform, matches) {
+        if (!matches || matches.length === 0) return null;
+
+        const storeName = platform === 'epic' ? 'Epic Games' : 'GOG';
+        const accentColor = platform === 'epic' ? '#0074e4' : '#7a35d9';
+        const accentBorder = platform === 'epic' ? '#4aa3ff' : '#b185e8';
+
+        const btn = document.createElement('span');
+        btn.className = `steam-${platform}-edition-info-btn`;
+        btn.textContent = '?';
+        btn.setAttribute('role', 'button');
+        btn.setAttribute('tabindex', '0');
+        btn.setAttribute('title', `Click or hover to view owned ${storeName} edition(s)`);
+        btn.style.cssText = `
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.25);
+            color: #d2dbe3;
+            font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
+            font-size: 10.5px;
+            font-weight: 700;
+            line-height: 1;
+            cursor: pointer;
+            user-select: none;
+            box-sizing: border-box;
+            transition: all 0.15s ease;
+            margin-left: 2px;
+            flex-shrink: 0;
+        `;
+
+        let tooltipEl = null;
+
+        function showTooltip() {
+            if (tooltipEl) return;
+
+            btn.style.background = accentColor;
+            btn.style.borderColor = accentBorder;
+            btn.style.color = '#ffffff';
+            btn.style.transform = 'scale(1.15)';
+
+            tooltipEl = document.createElement('div');
+            tooltipEl.className = 'steam-ownership-edition-tooltip';
+            tooltipEl.style.cssText = `
+                position: fixed;
+                background: #171d25;
+                border: 1px solid #4f6b7f;
+                border-radius: 5px;
+                padding: 10px 12px;
+                color: #e1e8ee;
+                font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
+                font-size: 12px;
+                line-height: 1.45;
+                box-shadow: 0 8px 24px rgba(0,0,0,0.75);
+                z-index: 9999999;
+                pointer-events: none;
+                max-width: 320px;
+                min-width: 180px;
+                box-sizing: border-box;
+                text-align: left;
+            `;
+
+            const header = document.createElement('div');
+            header.style.cssText = `
+                display: flex;
+                align-items: center;
+                gap: 5px;
+                margin-bottom: 6px;
+                padding-bottom: 5px;
+                border-bottom: 1px solid rgba(255,255,255,0.1);
+                font-size: 11px;
+                font-weight: 800;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                color: ${accentBorder};
+            `;
+            header.textContent = `${storeName} Library`;
+
+            const subheader = document.createElement('div');
+            subheader.style.cssText = `
+                font-size: 10.5px;
+                color: #8f98a0;
+                margin-bottom: 6px;
+            `;
+            subheader.textContent =
+                matches.length > 1
+                    ? 'Owned editions / versions:'
+                    : 'Owned edition / version:';
+
+            const list = document.createElement('ul');
+            list.style.cssText = `
+                margin: 0;
+                padding: 0 0 0 14px;
+                list-style-type: disc;
+                font-size: 11.5px;
+            `;
+
+            for (const m of matches) {
+                const li = document.createElement('li');
+                li.style.cssText = 'margin-bottom: 4px; color: #ffffff;';
+
+                const titleSpan = document.createElement('span');
+                titleSpan.textContent = m.original;
+                titleSpan.style.fontWeight = '600';
+                li.appendChild(titleSpan);
+
+                if (m.edition) {
+                    const edSpan = document.createElement('span');
+                    edSpan.textContent = ` [${m.edition}]`;
+                    edSpan.style.cssText = `color: ${accentBorder}; font-size: 10.5px; margin-left: 4px; font-weight: normal;`;
+                    li.appendChild(edSpan);
+                }
+
+                list.appendChild(li);
+            }
+
+            tooltipEl.appendChild(header);
+            tooltipEl.appendChild(subheader);
+            tooltipEl.appendChild(list);
+            document.body.appendChild(tooltipEl);
+
+            const rect = btn.getBoundingClientRect();
+            const tooltipRect = tooltipEl.getBoundingClientRect();
+
+            let top = rect.bottom + 6;
+            if (top + tooltipRect.height > window.innerHeight - 10) {
+                top = Math.max(10, rect.top - tooltipRect.height - 6);
+            }
+
+            let left = rect.left + rect.width / 2 - tooltipRect.width / 2;
+            if (left + tooltipRect.width > window.innerWidth - 10) {
+                left = window.innerWidth - tooltipRect.width - 10;
+            }
+            if (left < 10) {
+                left = 10;
+            }
+
+            tooltipEl.style.top = `${top}px`;
+            tooltipEl.style.left = `${left}px`;
+        }
+
+        function hideTooltip() {
+            if (tooltipEl) {
+                tooltipEl.remove();
+                tooltipEl = null;
+            }
+            btn.style.background = 'rgba(255, 255, 255, 0.08)';
+            btn.style.borderColor = 'rgba(255, 255, 255, 0.25)';
+            btn.style.color = '#d2dbe3';
+            btn.style.transform = 'scale(1)';
+        }
+
+        btn.addEventListener('mouseenter', showTooltip);
+        btn.addEventListener('mouseleave', hideTooltip);
+        btn.addEventListener('focus', showTooltip);
+        btn.addEventListener('blur', hideTooltip);
+
+        btn.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (tooltipEl) {
+                hideTooltip();
+            } else {
+                showTooltip();
+            }
+        });
+
+        document.addEventListener('click', function (e) {
+            if (tooltipEl && !btn.contains(e.target)) {
+                hideTooltip();
+            }
+        });
+
+        return btn;
+    }
+
     /*
      * Renders a single unified indicator on Steam Game Pages:
-     * Owned: [Epic Icon] [GOG Icon]
+     * Owned: [Epic Icon] (?) [GOG Icon] (?)
      * Shows icon for store where owned, else X (or single X if not owned on both).
      * Includes a down arrow before Owned for store updater dropdown.
      */
-    function renderUnifiedOwnershipBox(steamTitle, epicOwnedTitle, gogOwnedTitle) {
+    function renderUnifiedOwnershipBox(steamTitle, epicOwnedTitle, gogOwnedTitle, epicMatches = [], gogMatches = []) {
         const titleElement = getSteamTitleElement();
         if (!titleElement) return false;
 
@@ -909,6 +1192,9 @@
 
         // 3. Store Badges / Icons
         if (hasEpic) {
+            const epicGroup = document.createElement('span');
+            epicGroup.style.cssText = 'display: inline-flex; align-items: center; gap: 3px;';
+
             const epicLink = document.createElement('a');
             epicLink.href = getEpicSearchUrl(epicOwnedTitle || steamTitle);
             epicLink.target = '_blank';
@@ -946,10 +1232,20 @@
                 epicLink.style.borderColor = '#4aa3ff';
                 epicLink.style.transform = 'scale(1)';
             });
-            container.appendChild(epicLink);
+            epicGroup.appendChild(epicLink);
+
+            if (epicMatches && epicMatches.length > 0) {
+                const epicInfoBtn = createEditionInfoIcon('epic', epicMatches);
+                if (epicInfoBtn) epicGroup.appendChild(epicInfoBtn);
+            }
+
+            container.appendChild(epicGroup);
         }
 
         if (hasGog) {
+            const gogGroup = document.createElement('span');
+            gogGroup.style.cssText = 'display: inline-flex; align-items: center; gap: 3px;';
+
             const gogLink = document.createElement('a');
             gogLink.href = getGogSearchUrl(gogOwnedTitle || steamTitle);
             gogLink.target = '_blank';
@@ -988,7 +1284,14 @@
                 gogLink.style.borderColor = '#b185e8';
                 gogLink.style.transform = 'scale(1)';
             });
-            container.appendChild(gogLink);
+            gogGroup.appendChild(gogLink);
+
+            if (gogMatches && gogMatches.length > 0) {
+                const gogInfoBtn = createEditionInfoIcon('gog', gogMatches);
+                if (gogInfoBtn) gogGroup.appendChild(gogInfoBtn);
+            }
+
+            container.appendChild(gogGroup);
         }
 
         // If not owned on both stores, display a single X
@@ -1039,17 +1342,20 @@
 
         const comparisonTitle = getComparisonTitle(steamTitle);
 
-        let epicOwnedTitle = null;
+        let epicMatches = [];
         if (isEpicCacheValid()) {
-            epicOwnedTitle = findEpicOwnedTitle(comparisonTitle);
+            epicMatches = findEpicOwnedMatches(comparisonTitle);
         }
 
-        let gogOwnedTitle = null;
+        let gogMatches = [];
         if (isGogCacheValid()) {
-            gogOwnedTitle = findGogOwnedTitle(comparisonTitle);
+            gogMatches = findGogOwnedMatches(comparisonTitle);
         }
 
-        renderUnifiedOwnershipBox(steamTitle, epicOwnedTitle, gogOwnedTitle);
+        const epicOwnedTitle = epicMatches.length > 0 ? epicMatches[0].original : null;
+        const gogOwnedTitle = gogMatches.length > 0 ? gogMatches[0].original : null;
+
+        renderUnifiedOwnershipBox(steamTitle, epicOwnedTitle, gogOwnedTitle, epicMatches, gogMatches);
     }
 
     function isSteamPopup(element) {
@@ -1488,19 +1794,27 @@
         const normalized = getComparisonTitle(title);
         if (!normalized) return;
 
-        let epicOwnedTitle = null;
+        let epicMatches = [];
         if (isEpicCacheValid()) {
-            epicOwnedTitle = findEpicOwnedTitle(normalized);
+            epicMatches = findEpicOwnedMatches(normalized);
         }
 
-        let gogOwnedTitle = null;
+        let gogMatches = [];
         if (isGogCacheValid()) {
-            gogOwnedTitle = findGogOwnedTitle(normalized);
+            gogMatches = findGogOwnedMatches(normalized);
         }
 
-        if (!epicOwnedTitle && !gogOwnedTitle) {
+        if (epicMatches.length === 0 && gogMatches.length === 0) {
             return;
         }
+
+        const epicOwnedTitle = epicMatches.length > 0
+            ? epicMatches.map(m => m.original + (m.edition ? ` [${m.edition}]` : '')).join(', ')
+            : null;
+
+        const gogOwnedTitle = gogMatches.length > 0
+            ? gogMatches.map(m => m.original + (m.edition ? ` [${m.edition}]` : '')).join(', ')
+            : null;
 
         insertCardBadges(card, epicOwnedTitle, gogOwnedTitle);
     }
