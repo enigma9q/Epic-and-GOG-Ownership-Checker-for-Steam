@@ -58,10 +58,16 @@ MIT License. See [LICENSE](LICENSE).
 Created by **Theodoros OhYeah, ChatGPT, and Antigravity**.
 
 This is an unofficial userscript and is not affiliated with Valve, Steam, Epic Games, or GOG.
-
+Owned status
 <img width="775" height="501" alt="image" src="https://github.com/user-attachments/assets/193f7755-dd30-4a43-930d-b1c7003a6f7b" />
-<img width="1241" height="823" alt="image" src="https://github.com/user-attachments/assets/0c0e7ff4-22db-4cbe-a3c5-14fb61e4c46d" />
+<img width="1375" height="681" alt="image" src="https://github.com/user-attachments/assets/ab4b9eb7-6411-4ae8-9ff8-fd71f37c7548" />
+
+Sync menu
+<img width="1303" height="438" alt="image" src="https://github.com/user-attachments/assets/48dd0644-9c54-4684-abc1-1e602f0d3e91" />
+
+Sync buttons in Epic and GoG stores
 <img width="1498" height="384" alt="image" src="https://github.com/user-attachments/assets/65807572-56fa-4d4f-912c-7931bd46a6dd" />
+
 <img width="561" height="480" alt="image" src="https://github.com/user-attachments/assets/fc092229-5960-4132-8363-a82cb945e8f8" />
 
 
