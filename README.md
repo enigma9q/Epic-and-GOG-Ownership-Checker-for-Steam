@@ -60,6 +60,8 @@ MIT License. See [LICENSE](LICENSE).
 Created by **Theodoros OhYeah, ChatGPT, Codex, and Antigravity**.
 
 This is an unofficial userscript and is not affiliated with Valve, Steam, Epic Games, or GOG.
+
+
 Owned status
 <img width="775" height="501" alt="image" src="https://github.com/user-attachments/assets/193f7755-dd30-4a43-930d-b1c7003a6f7b" />
 <img width="1375" height="681" alt="image" src="https://github.com/user-attachments/assets/ab4b9eb7-6411-4ae8-9ff8-fd71f37c7548" />
