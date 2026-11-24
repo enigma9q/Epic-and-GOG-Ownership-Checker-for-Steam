@@ -1,6 +1,6 @@
 # Epic and GOG Ownership Checker for Steam
 
-A Tampermonkey userscript that shows Epic Games Store and GOG ownership directly on Steam.
+A Tampermonkey userscript that shows Epic Games Store and GOG ownership on Steam and GG.deals.
 
 ## Features
 
@@ -16,6 +16,8 @@ A Tampermonkey userscript that shows Epic Games Store and GOG ownership directly
 - **Full Sync**: Option to perform a full scan of all library pages whenever needed.
 - **Header-Integrated Sync Buttons**: Adds a sleek **`Sync to Steam`** button next to **Purchases** on Epic Games Store and **My Collection** on GOG, with a compact dropdown popup displaying owned titles, last purchase, and exact last sync timestamp.
 - **Steam Cards Support**: Shows small green `Epic ✓` and `GOG ✓` badges on search results, recommendations, and similar-game cards with detailed owned edition tooltips.
+- **GG.deals Support**: Shows the same ownership badges on individual game pages and wishlist entries, including filtered wishlist views.
+- **Edition-Preserving Sync**: Stores distinct editions separately, so the tooltip can list every owned edition and Quick Sync can detect a newly purchased edition of an already owned game.
 - **Local Storage Caching**: Caches Epic and GOG ownership data locally using Tampermonkey storage.
 - **Privacy Friendly**: Uses the browser's existing Epic and GOG login sessions without transmitting data to third parties.
 
@@ -25,7 +27,7 @@ A Tampermonkey userscript that shows Epic Games Store and GOG ownership directly
 2. Create a new userscript.
 3. Copy `Epic-and-GOG-Ownership-Checker-for-Steam.user.js` into it.
 4. Save the script.
-5. Open Steam.
+5. Open Steam or a supported GG.deals game or wishlist page.
 
 ## Synchronization
 
@@ -55,7 +57,7 @@ MIT License. See [LICENSE](LICENSE).
 
 ## Credits
 
-Created by **Theodoros OhYeah, ChatGPT, and Antigravity**.
+Created by **Theodoros OhYeah, ChatGPT, Codex, and Antigravity**.
 
 This is an unofficial userscript and is not affiliated with Valve, Steam, Epic Games, or GOG.
 Owned status

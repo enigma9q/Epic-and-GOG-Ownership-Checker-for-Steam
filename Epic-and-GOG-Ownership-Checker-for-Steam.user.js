@@ -1,15 +1,17 @@
 // ==UserScript==
 // @name         Epic and GOG Ownership Checker for Steam
 // @namespace    https://steam-multi-ownership.local/
-// @version      4.1
-// @author       Theodoros OhYeah (enigma9q), ChatGPT & Antigravity
-// @description  Shows Epic and GOG ownership on Steam game pages, search results, library cards, similar games and recommendation cards
+// @version      4.2
+// @author       Theodoros OhYeah (enigma9q), ChatGPT, Codex & Antigravity
+// @description  Shows Epic and GOG ownership on Steam and GG.deals game and wishlist pages
 // @match        https://store.steampowered.com/*
 // @match        https://accounts.epicgames.com/account/*
 // @match        https://www.epicgames.com/account/*
 // @match        https://www.gog.com/*
 // @match        https://gog.com/*
 // @match        https://embed.gog.com/*
+// @match        https://gg.deals/game/*
+// @match        https://gg.deals/wishlist/*
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
@@ -44,6 +46,8 @@
 
     const EPIC_CARD_BADGE_CLASS = 'steam-epic-card-badge';
     const GOG_CARD_BADGE_CLASS = 'steam-gog-card-badge';
+    const GG_DEALS_BADGES_CLASS = 'steam-gg-deals-ownership-badges';
+    const GG_DEALS_OWNERSHIP_ROW_CLASS = 'steam-gg-deals-ownership-row';
 
     let originalSteamTitle = null;
 
@@ -64,6 +68,10 @@
 
     function isSteamPage() {
         return location.hostname === 'store.steampowered.com';
+    }
+
+    function isGgDealsPage() {
+        return location.hostname === 'gg.deals';
     }
 
     function normalizeTitle(title) {
@@ -177,6 +185,19 @@
         result = removePurchasePrefix(result);
         result = removeEditionSuffix(result);
         return result;
+    }
+
+    // Keep edition words in the storage key so different editions of one game
+    // survive syncing, while comparisons still use getComparisonTitle().
+    function getLibraryKey(title) {
+        return removePurchasePrefix(normalizeTitle(title));
+    }
+
+    function getStoredLibraryKey(entry) {
+        const title = typeof entry === 'string'
+            ? entry
+            : (entry && (entry.original || entry.normalized)) || '';
+        return getLibraryKey(title);
     }
 
     function detectEditionName(originalTitle, baseComparisonTitle) {
@@ -445,9 +466,7 @@
         }
 
         const existingLibrary = getEpicLibrary();
-        const existingSet = new Set(
-            existingLibrary.map(item => item.normalized)
-        );
+        const existingSet = new Set(existingLibrary.map(getStoredLibraryKey));
         const isSmart = !isFullSync && existingSet.size > 0;
 
         const newlyFoundGames = [];
@@ -485,7 +504,7 @@
                             const title = item.description.trim();
                             if (!title) continue;
 
-                            const normalized = getComparisonTitle(title);
+                            const normalized = getLibraryKey(title);
                             if (!normalized) continue;
 
                             if (isSmart && existingSet.has(normalized)) {
@@ -516,8 +535,9 @@
 
                     const unique = new Map();
                     combined.forEach(function (game) {
-                        if (!unique.has(game.normalized)) {
-                            unique.set(game.normalized, game.original);
+                        const libraryKey = getStoredLibraryKey(game);
+                        if (libraryKey && !unique.has(libraryKey)) {
+                            unique.set(libraryKey, game.original || game.normalized);
                         }
                     });
 
@@ -619,9 +639,7 @@
 
     async function fetchGogGames(updateProgress, isFullSync) {
         const existingLibrary = getGogLibrary();
-        const existingSet = new Set(
-            existingLibrary.map(item => item.normalized)
-        );
+        const existingSet = new Set(existingLibrary.map(getStoredLibraryKey));
         const isSmart = !isFullSync && existingSet.size > 0;
 
         updateProgress(
@@ -643,7 +661,7 @@
         for (const product of firstPage.products) {
             if (!product || product.isMovie === true || product.isGame === false) continue;
             if (!product.title || typeof product.title !== 'string') continue;
-            const norm = getComparisonTitle(product.title);
+            const norm = getLibraryKey(product.title);
             if (!norm) continue;
 
             if (isSmart && existingSet.has(norm)) {
@@ -667,7 +685,7 @@
                     for (const product of data.products) {
                         if (!product || product.isMovie === true || product.isGame === false) continue;
                         if (!product.title || typeof product.title !== 'string') continue;
-                        const norm = getComparisonTitle(product.title);
+                        const norm = getLibraryKey(product.title);
                         if (!norm) continue;
 
                         if (isSmart && existingSet.has(norm)) {
@@ -701,7 +719,7 @@
             }
 
             const title = product.title.trim();
-            const normalized = getComparisonTitle(title);
+            const normalized = getLibraryKey(title);
             if (!normalized) continue;
 
             library.push({
@@ -712,8 +730,9 @@
 
         const unique = new Map();
         for (const game of library) {
-            if (!unique.has(game.normalized)) {
-                unique.set(game.normalized, game.original);
+            const libraryKey = getStoredLibraryKey(game);
+            if (libraryKey && !unique.has(libraryKey)) {
+                unique.set(libraryKey, game.original || game.normalized);
             }
         }
 
@@ -757,8 +776,9 @@
 
         const unique = new Map();
         for (const game of combined) {
-            if (!unique.has(game.normalized)) {
-                unique.set(game.normalized, game.original);
+            const libraryKey = getStoredLibraryKey(game);
+            if (libraryKey && !unique.has(libraryKey)) {
+                unique.set(libraryKey, game.original || game.normalized);
             }
         }
 
@@ -1895,6 +1915,129 @@
         setTimeout(scanSteamCards, 12000);
     }
 
+    function addGgDealsOwnershipBadges(titleElement, title, options = {}) {
+        if (!titleElement || !title) return;
+
+        if (options.withAnchor && titleElement.closest(`.${GG_DEALS_OWNERSHIP_ROW_CLASS}`)) {
+            return;
+        }
+
+        const parent = titleElement.parentElement;
+        if (!parent) return;
+
+        parent.querySelectorAll(`:scope > .${GG_DEALS_BADGES_CLASS}`).forEach(function (badgeGroup) {
+            badgeGroup.remove();
+        });
+
+        const comparisonTitle = getComparisonTitle(title);
+        const epicMatches = isEpicCacheValid()
+            ? findEpicOwnedMatches(comparisonTitle)
+            : [];
+        const gogMatches = isGogCacheValid()
+            ? findGogOwnedMatches(comparisonTitle)
+            : [];
+
+        if (epicMatches.length === 0 && gogMatches.length === 0) return;
+
+        const badgeGroup = document.createElement('span');
+        badgeGroup.className = GG_DEALS_BADGES_CLASS;
+        badgeGroup.style.cssText = options.withAnchor
+            ? 'display:inline-flex;align-items:center;gap:3px;margin-left:0;vertical-align:middle;'
+            : 'display:inline-flex;align-items:center;gap:3px;margin-left:6px;vertical-align:middle;';
+
+        if (epicMatches.length > 0) {
+            const editions = epicMatches.map(match =>
+                match.original + (match.edition ? ` [${match.edition}]` : '')
+            ).join(', ');
+            badgeGroup.appendChild(createCardBadge(
+                'epic',
+                'owned',
+                `You own ${editions} on Epic Games Store.`
+            ));
+        }
+
+        if (gogMatches.length > 0) {
+            const editions = gogMatches.map(match =>
+                match.original + (match.edition ? ` [${match.edition}]` : '')
+            ).join(', ');
+            badgeGroup.appendChild(createCardBadge(
+                'gog',
+                'owned',
+                `You own ${editions} through GOG.`
+            ));
+        }
+
+        badgeGroup.querySelectorAll('span').forEach(function (badge) {
+            badge.style.pointerEvents = 'auto';
+            badge.style.cursor = 'help';
+        });
+
+        if (options.withAnchor) {
+            const row = document.createElement('span');
+            row.className = GG_DEALS_OWNERSHIP_ROW_CLASS;
+            row.style.cssText = 'position:absolute;left:8px;bottom:8px;z-index:3;display:inline-flex;align-items:center;align-content:flex-start;flex-wrap:wrap;gap:6px;max-width:calc(100% - 16px);';
+            titleElement.style.position = 'static';
+            titleElement.style.left = 'auto';
+            titleElement.style.bottom = 'auto';
+            parent.insertBefore(row, titleElement);
+            row.appendChild(titleElement);
+            row.appendChild(badgeGroup);
+        } else {
+            titleElement.insertAdjacentElement('afterend', badgeGroup);
+        }
+    }
+
+    function scanGgDealsPage() {
+        if (!isGgDealsPage()) return;
+
+        if (/^\/game\/[^/]+\/?$/.test(location.pathname)) {
+            const header = document.querySelector('.game-header-box-single');
+            const titleElement = header && header.querySelector('.game-info-image .game-link-widget');
+            const title = header && header.getAttribute('data-game-title');
+            if (titleElement && title) {
+                addGgDealsOwnershipBadges(titleElement, title, { withAnchor: true });
+            }
+            return;
+        }
+
+        if (/^\/wishlist(?:\/[^/]*)?\/?$/.test(location.pathname)) {
+            document.querySelectorAll('.wishlist-container a.game-info-title[href*="/game/"]').forEach(function (titleElement) {
+                const card = titleElement.closest('[data-game-title], [data-container-game-id]');
+                const title = (card && (card.getAttribute('data-game-title') || card.getAttribute('data-game-name'))) ||
+                    titleElement.getAttribute('data-title-auto-hide') ||
+                    titleElement.textContent.trim();
+                addGgDealsOwnershipBadges(titleElement, title);
+            });
+        }
+    }
+
+    function observeGgDealsPage() {
+        scanGgDealsPage();
+        if (!document.body) return;
+
+        let timer = null;
+        const observer = new MutationObserver(function (mutations) {
+            const hasPageContentChange = mutations.some(function (mutation) {
+                return Array.from(mutation.addedNodes || []).some(function (node) {
+                    return node.nodeType !== Node.ELEMENT_NODE ||
+                        (!node.classList.contains(GG_DEALS_BADGES_CLASS) &&
+                            !node.classList.contains(GG_DEALS_OWNERSHIP_ROW_CLASS));
+                });
+            });
+            if (!hasPageContentChange) return;
+
+            clearTimeout(timer);
+            timer = setTimeout(function () {
+                scanGgDealsPage();
+            }, 200);
+        });
+
+        observer.observe(document.body, { childList: true, subtree: true });
+        setTimeout(scanGgDealsPage, 500);
+        setTimeout(scanGgDealsPage, 1500);
+        setTimeout(scanGgDealsPage, 3000);
+    }
+
     function formatExactSyncDate(timestamp) {
         if (!timestamp || timestamp <= 0) return 'Never';
         const d = new Date(timestamp);
@@ -2694,6 +2837,12 @@
         }
 
         observeSteamCards();
+    } else if (isGgDealsPage()) {
+        if (document.body) {
+            observeGgDealsPage();
+        } else {
+            window.addEventListener('DOMContentLoaded', observeGgDealsPage, { once: true });
+        }
     }
 
 })();
