@@ -73,17 +73,27 @@ This is an unofficial userscript and is not affiliated with Valve, Steam, Epic G
 
 Owned status
 
-<img width="775" height="501" alt="image" src="https://github.com/user-attachments/assets/193f7755-dd30-4a43-930d-b1c7003a6f7b" />
+<img width="1144" height="594" alt="image" src="https://github.com/user-attachments/assets/d4799231-80c1-40cb-b6ed-fb4ef7550193" />
 
-<img width="1375" height="681" alt="image" src="https://github.com/user-attachments/assets/ab4b9eb7-6411-4ae8-9ff8-fd71f37c7548" />
+<img width="1131" height="797" alt="image" src="https://github.com/user-attachments/assets/3b3b0ec8-85ca-4fa8-8576-938d90e3d94e" />
+
 
 Sync menu
-<img width="1303" height="438" alt="image" src="https://github.com/user-attachments/assets/48dd0644-9c54-4684-abc1-1e602f0d3e91" />
 
-Sync buttons in Epic and GoG stores
+<img width="429" height="434" alt="image" src="https://github.com/user-attachments/assets/fc510983-6d6c-4197-b5c0-b9dd5418ae21" />
+
+
+Sync buttons in game stores
+
 <img width="1498" height="384" alt="image" src="https://github.com/user-attachments/assets/65807572-56fa-4d4f-912c-7931bd46a6dd" />
 
 <img width="561" height="480" alt="image" src="https://github.com/user-attachments/assets/fc092229-5960-4132-8363-a82cb945e8f8" />
+
+<img width="1014" height="508" alt="image" src="https://github.com/user-attachments/assets/c8bc43fc-34f5-4090-80f5-5c960c9ee080" />
+
+In gg.deals
+
+<img width="1377" height="443" alt="image" src="https://github.com/user-attachments/assets/aa3417fb-d942-4c7e-949f-193723bc200e" />
 
 
 
