@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Epic and GOG Ownership Checker for Steam
 // @namespace    https://steam-multi-ownership.local/
-// @version      4.2
+// @version      5.0
 // @author       Theodoros OhYeah (enigma9q), ChatGPT, Codex & Antigravity
-// @description  Shows Epic and GOG ownership on Steam and GG.deals game and wishlist pages
+// @description  Shows Epic, GOG and Amazon Games ownership on Steam and GG.deals
 // @match        https://store.steampowered.com/*
 // @match        https://accounts.epicgames.com/account/*
 // @match        https://www.epicgames.com/account/*
@@ -12,9 +12,24 @@
 // @match        https://embed.gog.com/*
 // @match        https://gg.deals/game/*
 // @match        https://gg.deals/wishlist/*
+// @match        https://luna.amazon.com.be/claims/my-collection*
+// @match        https://luna.amazon.com/claims/my-collection*
+// @match        https://luna.amazon.ca/claims/my-collection*
+// @match        https://luna.amazon.co.uk/claims/my-collection*
+// @match        https://luna.amazon.de/claims/my-collection*
+// @match        https://luna.amazon.fr/claims/my-collection*
+// @match        https://luna.amazon.it/claims/my-collection*
+// @match        https://luna.amazon.es/claims/my-collection*
+// @match        https://luna.amazon.nl/claims/my-collection*
+// @match        https://luna.amazon.pl/claims/my-collection*
+// @match        https://luna.amazon.se/claims/my-collection*
+// @match        https://gaming.amazon.com/claims/my-collection*
+// @include      /^https:\/\/luna\.amazon\.(?:com(?:\.[a-z]{2})?|co\.[a-z]{2}|[a-z]{2,3})\/claims\/my-collection\/?(?:\?.*)?$/i
+// @include      /^https:\/\/gaming\.amazon\.(?:com(?:\.[a-z]{2})?|co\.[a-z]{2}|[a-z]{2,3})\/claims\/my-collection\/?(?:\?.*)?$/i
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
+// @grant        GM_registerMenuCommand
 // @connect      accounts.epicgames.com
 // @connect      www.epicgames.com
 // @connect      embed.gog.com
@@ -30,6 +45,9 @@
     const EPIC_SYNC_TIME_KEY = 'epicOwnershipSyncTime';
     const GOG_LIBRARY_KEY = 'gogOwnershipLibrary';
     const GOG_SYNC_TIME_KEY = 'gogOwnershipSyncTime';
+    const AMAZON_LIBRARY_KEY = 'amazonGamesOwnershipLibrary';
+    const AMAZON_SYNC_TIME_KEY = 'amazonGamesOwnershipSyncTime';
+    const AMAZON_REGION_KEY = 'amazonGamesOwnershipRegion';
 
     const CACHE_DURATION = 7 * 24 * 60 * 60 * 1000;
 
@@ -40,6 +58,21 @@
         'https://accounts.epicgames.com/account/v2/payment/ajaxGetOrderHistory';
 
     const GOG_LIBRARY_URL = 'https://www.gog.com/account';
+    const AMAZON_REGIONS = [
+        { id: 'be', label: 'Belgium', origin: 'https://luna.amazon.com.be' },
+        { id: 'us', label: 'United States', origin: 'https://luna.amazon.com' },
+        { id: 'ca', label: 'Canada', origin: 'https://luna.amazon.ca' },
+        { id: 'uk', label: 'United Kingdom', origin: 'https://luna.amazon.co.uk' },
+        { id: 'de', label: 'Germany', origin: 'https://luna.amazon.de' },
+        { id: 'fr', label: 'France', origin: 'https://luna.amazon.fr' },
+        { id: 'it', label: 'Italy', origin: 'https://luna.amazon.it' },
+        { id: 'es', label: 'Spain / Portugal', origin: 'https://luna.amazon.es' },
+        { id: 'nl', label: 'Netherlands', origin: 'https://luna.amazon.nl' },
+        { id: 'pl', label: 'Poland', origin: 'https://luna.amazon.pl' },
+        { id: 'se', label: 'Sweden', origin: 'https://luna.amazon.se' },
+        { id: 'gaming', label: 'Amazon Games (gaming.amazon.com)', origin: 'https://gaming.amazon.com' },
+        { id: 'custom', label: 'Other Amazon region…', origin: '' }
+    ];
 
     const GOG_API_URL =
         'https://embed.gog.com/account/getFilteredProducts';
@@ -48,8 +81,67 @@
     const GOG_CARD_BADGE_CLASS = 'steam-gog-card-badge';
     const GG_DEALS_BADGES_CLASS = 'steam-gg-deals-ownership-badges';
     const GG_DEALS_OWNERSHIP_ROW_CLASS = 'steam-gg-deals-ownership-row';
+    const AMAZON_CARD_BADGE_CLASS = 'steam-amazon-card-badge';
 
     let originalSteamTitle = null;
+    let activeCardBadgeTooltip = null;
+
+    function closeCardBadgeTooltip() {
+        if (!activeCardBadgeTooltip) return;
+        activeCardBadgeTooltip.element.remove();
+        activeCardBadgeTooltip = null;
+    }
+
+    function toggleCardBadgeTooltip(badge, content) {
+        if (activeCardBadgeTooltip && activeCardBadgeTooltip.badge === badge) {
+            closeCardBadgeTooltip();
+            return;
+        }
+
+        closeCardBadgeTooltip();
+        const tooltip = document.createElement('div');
+        tooltip.className = 'steam-card-version-tooltip';
+        tooltip.setAttribute('role', 'tooltip');
+        tooltip.textContent = content;
+        tooltip.style.cssText = `
+            position: fixed;
+            z-index: 1000000;
+            max-width: min(320px, calc(100vw - 24px));
+            padding: 9px 11px;
+            border: 1px solid #526274;
+            border-radius: 5px;
+            background: #111822;
+            color: #e8edf2;
+            box-shadow: 0 5px 18px rgba(0, 0, 0, .6);
+            font: 12px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+            white-space: pre-line;
+            pointer-events: auto;
+        `;
+        document.body.appendChild(tooltip);
+
+        const rect = badge.getBoundingClientRect();
+        const tooltipRect = tooltip.getBoundingClientRect();
+        const left = Math.max(12, Math.min(rect.left, window.innerWidth - tooltipRect.width - 12));
+        const belowTop = rect.bottom + 6;
+        const top = belowTop + tooltipRect.height <= window.innerHeight - 8
+            ? belowTop
+            : Math.max(8, rect.top - tooltipRect.height - 6);
+        tooltip.style.left = `${left}px`;
+        tooltip.style.top = `${top}px`;
+        activeCardBadgeTooltip = { badge, element: tooltip };
+    }
+
+    document.addEventListener('click', function (event) {
+        if (!activeCardBadgeTooltip) return;
+        if (!activeCardBadgeTooltip.badge.contains(event.target) &&
+            !activeCardBadgeTooltip.element.contains(event.target)) {
+            closeCardBadgeTooltip();
+        }
+    });
+
+    document.addEventListener('keydown', function (event) {
+        if (event.key === 'Escape') closeCardBadgeTooltip();
+    });
 
     function isEpicPage() {
         return (
@@ -72,6 +164,44 @@
 
     function isGgDealsPage() {
         return location.hostname === 'gg.deals';
+    }
+
+    function isAmazonGamesPage() {
+        return (
+            isAmazonCollectionHost(location.hostname) &&
+            /^\/claims\/my-collection\/?$/.test(location.pathname)
+        );
+    }
+
+    function isAmazonCollectionHost(hostname) {
+        return /^(?:luna|gaming)\.amazon\.(?:com(?:\.[a-z]{2})?|co\.[a-z]{2}|[a-z]{2,3})$/i.test(hostname || '');
+    }
+
+    function getAmazonRegionOrigin() {
+        const stored = GM_getValue(AMAZON_REGION_KEY, '');
+        if (!stored) return '';
+        try {
+            const url = new URL(stored);
+            if (url.protocol !== 'https:' || !isAmazonCollectionHost(url.hostname)) return '';
+            return url.origin;
+        } catch (_) {
+            return '';
+        }
+    }
+
+    function getAmazonGamesCollectionUrl() {
+        const origin = getAmazonRegionOrigin();
+        return origin ? `${origin}/claims/my-collection` : '';
+    }
+
+    function getAmazonRegionLabel(origin = getAmazonRegionOrigin()) {
+        const region = AMAZON_REGIONS.find(option => option.origin === origin);
+        if (region) return region.label;
+        try {
+            return origin ? new URL(origin).hostname : 'Not selected';
+        } catch (_) {
+            return 'Not selected';
+        }
     }
 
     function normalizeTitle(title) {
@@ -351,6 +481,285 @@
         return matches.length > 0 ? matches[0].original : null;
     }
 
+    function getAmazonLibrary() {
+        const library = GM_getValue(AMAZON_LIBRARY_KEY, []);
+        return Array.isArray(library) ? library : [];
+    }
+
+    function getAmazonSyncTime() {
+        return GM_getValue(AMAZON_SYNC_TIME_KEY, 0);
+    }
+
+    function isAmazonCacheValid() {
+        const library = getAmazonLibrary();
+        const syncTime = getAmazonSyncTime();
+        return library.length > 0 && syncTime > 0 && Date.now() - syncTime <= CACHE_DURATION;
+    }
+
+    function findAmazonOwnedMatches(comparisonTitle) {
+        if (!isAmazonCacheValid()) return [];
+        return findLibraryMatches(getAmazonLibrary(), comparisonTitle);
+    }
+
+    function collectAmazonGamesFromPage(existingKeys = null) {
+        const entries = document.querySelectorAll('[data-a-target="accordion_entry"]');
+        const found = [];
+        const seen = new Set();
+        let hitExisting = false;
+
+        for (const entry of entries) {
+            const titleElement = entry.querySelector('h3[title], h3');
+            const title = (titleElement && (titleElement.getAttribute('title') || titleElement.textContent))
+                ?.trim();
+            if (!title) continue;
+
+            const deliveryMessage = entry.querySelector('[data-a-target="claim-entry-delivery-message-text"]');
+            const deliveryText = deliveryMessage ? deliveryMessage.textContent.trim() : '';
+            const hasCrownMarker = !!entry.querySelector(
+                '[aria-label*="crown" i], [title*="crown" i], [data-a-target*="crown" i], [class*="crown" i], [data-testid*="crown" i]'
+            );
+
+            if (!/delivered to your amazon games library/i.test(deliveryText) && !hasCrownMarker) {
+                continue;
+            }
+
+            const key = getLibraryKey(title);
+            if (!key || seen.has(key)) continue;
+            if (existingKeys && existingKeys.has(key)) {
+                hitExisting = true;
+                break;
+            }
+            seen.add(key);
+            found.push({ normalized: key, original: title });
+        }
+
+        return { found, hitExisting };
+    }
+
+    function saveAmazonGames(found) {
+        const existingLibrary = getAmazonLibrary();
+        const existingKeys = new Set(existingLibrary.map(getStoredLibraryKey));
+        const addedCount = found.filter(game => !existingKeys.has(getStoredLibraryKey(game))).length;
+        const combined = [...found, ...existingLibrary];
+        const unique = new Map();
+        for (const game of combined) {
+            const key = getStoredLibraryKey(game);
+            if (key && !unique.has(key)) {
+                unique.set(key, game.original || game.normalized);
+            }
+        }
+
+        const library = Array.from(unique.entries()).map(([normalized, original]) => ({ normalized, original }));
+        GM_setValue(AMAZON_LIBRARY_KEY, library);
+        GM_setValue(AMAZON_SYNC_TIME_KEY, Date.now());
+        return { library, addedCount };
+    }
+
+    function delay(milliseconds) {
+        return new Promise(resolve => setTimeout(resolve, milliseconds));
+    }
+
+    function getAmazonSelectedPeriod() {
+        const selectedButton = document.querySelector(
+            '[data-a-target="time-window-filter-flyout"] button[data-type][data-a-target^="filter-button-selected"]'
+        );
+        if (selectedButton) return selectedButton.dataset.type;
+
+        const filterDropdown = document.querySelector('[data-a-target="time-window-filter-dropdown"]');
+        const dropdown = filterDropdown?.closest('button') ||
+            document.querySelector('button[data-a-target="amazon-dropdown-header-interactable"][aria-label^="Filter by collected in"]');
+        const headerText = (dropdown?.getAttribute('aria-label') ||
+            filterDropdown?.textContent || '')
+            .replace(/^filter by collected in\s*/i, '')
+            .trim();
+        if (!headerText) return null;
+
+        const options = document.querySelectorAll('[data-a-target="time-window-filter-flyout"] button[data-type]');
+        const matchingOption = Array.from(options).find(button =>
+            button.dataset.type.toLowerCase() === headerText.toLowerCase() ||
+            button.textContent.trim().toLowerCase() === headerText.toLowerCase()
+        );
+        if (matchingOption) return matchingOption.dataset.type;
+        if (headerText.toLowerCase() === 'past 3 months') return 'past-3-months';
+        return /^\d{4}$/.test(headerText) ? headerText : null;
+    }
+
+    async function openAmazonPeriodMenu() {
+        let flyout = document.querySelector('[data-a-target="time-window-filter-flyout"]');
+        const isHidden = element => !element || element.classList.contains('tw-hide') || element.getClientRects().length === 0;
+        if (isHidden(flyout)) {
+            const filterDropdown = document.querySelector('[data-a-target="time-window-filter-dropdown"]');
+            const dropdown = filterDropdown?.closest('button') ||
+                document.querySelector('button[data-a-target="amazon-dropdown-header-interactable"][aria-label^="Filter by collected in"]');
+            if (!dropdown) throw new Error('Could not open Amazon’s collection period menu.');
+            dropdown.click();
+            await delay(1000);
+        }
+
+        const deadline = Date.now() + 10000;
+        while (Date.now() < deadline) {
+            flyout = document.querySelector('[data-a-target="time-window-filter-flyout"]');
+            if (!isHidden(flyout) && flyout.querySelectorAll('button[data-type]').length > 0) {
+                return flyout;
+            }
+            await delay(150);
+        }
+        throw new Error('Could not load Amazon’s collection periods. Open the collection filter and try again.');
+    }
+
+    async function selectAmazonPeriod(periodType) {
+        if (getAmazonSelectedPeriod() === periodType) return;
+
+        const flyout = await openAmazonPeriodMenu();
+        const option = Array.from(flyout.querySelectorAll('button[data-type]'))
+            .find(button => button.dataset.type === periodType);
+        if (!option) throw new Error(`Amazon collection period “${periodType}” is unavailable.`);
+        option.click();
+
+        const selectionDeadline = Date.now() + 15000;
+        while (getAmazonSelectedPeriod() !== periodType) {
+            if (Date.now() >= selectionDeadline) {
+                throw new Error(`Amazon did not switch to collection period “${periodType}”.`);
+            }
+            await delay(150);
+        }
+
+        // Let the selected period's entries finish rendering before scanning them.
+        let previousSignature = null;
+        let stableSince = Date.now();
+        const renderDeadline = Date.now() + 20000;
+        while (Date.now() < renderDeadline) {
+            const signature = Array.from(document.querySelectorAll('[data-a-target="accordion_entry"]'))
+                .map(entry => `${entry.querySelector('h3[title], h3')?.textContent || ''}|${entry.querySelector('[data-a-target="claim-entry-delivery-message-text"]')?.textContent || ''}`)
+                .join('\n');
+            if (signature !== previousSignature) {
+                previousSignature = signature;
+                stableSince = Date.now();
+            } else if (Date.now() - stableSince >= 2800) {
+                return;
+            }
+            await delay(250);
+        }
+        throw new Error(`Amazon’s “${periodType}” collection did not finish loading in time.`);
+    }
+
+    async function loadNextAmazonBatch(onProgress) {
+        const moreLabel = document.querySelector('[data-a-target="see-more-button"]');
+        const moreButton = moreLabel && moreLabel.closest('button');
+        if (!moreButton) return false;
+
+        const previousCount = document.querySelectorAll('[data-a-target="accordion_entry"]').length;
+        onProgress?.(`Loading more titles (${previousCount} shown)…`);
+        moreButton.click();
+
+        const deadline = Date.now() + 30000;
+        let lastCount = previousCount;
+        let lastMoreLabel = moreLabel.textContent.trim();
+        let lastEntriesSignature = null;
+        let stableSince = null;
+        let noMoreSince = null;
+        while (Date.now() < deadline) {
+            const entries = Array.from(document.querySelectorAll('[data-a-target="accordion_entry"]'));
+            const currentCount = entries.length;
+            const currentEntriesSignature = entries.map(entry =>
+                `${entry.querySelector('h3[title], h3')?.textContent || ''}|${entry.querySelector('[data-a-target="claim-entry-delivery-message-text"]')?.textContent || ''}`
+            ).join('\n');
+            const currentMoreLabel = document.querySelector('[data-a-target="see-more-button"]')?.textContent.trim() || '';
+            if (currentMoreLabel) {
+                noMoreSince = null;
+            } else if (noMoreSince === null) {
+                noMoreSince = Date.now();
+            }
+            if (currentCount > previousCount) {
+                if (currentCount !== lastCount || currentMoreLabel !== lastMoreLabel || currentEntriesSignature !== lastEntriesSignature) {
+                    lastCount = currentCount;
+                    lastMoreLabel = currentMoreLabel;
+                    lastEntriesSignature = currentEntriesSignature;
+                    stableSince = Date.now();
+                } else if (
+                    stableSince !== null &&
+                    Date.now() - stableSince >= 5000 &&
+                    (currentMoreLabel || (noMoreSince !== null && Date.now() - noMoreSince >= 5000))
+                ) {
+                    return true;
+                }
+            }
+            await delay(250);
+        }
+
+        throw new Error('Amazon’s “See more” control did not load additional titles.');
+    }
+
+    async function loadAllAmazonTitles(onProgress) {
+        let batchesLoaded = 0;
+        while (await loadNextAmazonBatch(onProgress)) batchesLoaded += 1;
+        return batchesLoaded;
+    }
+
+    async function collectAmazonPeriodQuickly(existingKeys, collected, onProgress) {
+        while (true) {
+            const result = collectAmazonGamesFromPage(existingKeys);
+            result.found.forEach(game => collected.set(getStoredLibraryKey(game), game));
+            if (result.hitExisting) return true;
+            if (!(await loadNextAmazonBatch(onProgress))) return false;
+        }
+    }
+
+    async function syncAmazonLibraryFromAllPeriods(options = {}) {
+        const isFullSync = !!options.isFullSync;
+        const onProgress = options.onProgress;
+        const flyout = await openAmazonPeriodMenu();
+        const filterButtons = Array.from(flyout.querySelectorAll('button[data-type]'));
+
+        const periods = filterButtons.map(button => ({
+            type: button.dataset.type,
+            label: button.textContent.trim()
+        }));
+        const originalPeriod = getAmazonSelectedPeriod();
+        if (!originalPeriod) throw new Error('Could not determine the selected Amazon collection period.');
+
+        const existingLibrary = getAmazonLibrary();
+        const existingKeys = new Set(existingLibrary.map(getStoredLibraryKey));
+        const isSmart = !isFullSync && existingKeys.size > 0;
+        const collected = new Map();
+        let periodsScanned = 0;
+        let stoppedAtExisting = false;
+        try {
+            for (let index = 0; index < periods.length; index += 1) {
+                const period = periods[index];
+                onProgress?.(`Scanning ${period.label || period.type} (${index + 1}/${periods.length})…`);
+                if (getAmazonSelectedPeriod() !== period.type) {
+                    await selectAmazonPeriod(period.type);
+                } else {
+                    // Allow the currently open page to settle before its first scan as well.
+                    await delay(300);
+                }
+
+                periodsScanned += 1;
+                if (isSmart) {
+                    stoppedAtExisting = await collectAmazonPeriodQuickly(existingKeys, collected, onProgress);
+                    if (stoppedAtExisting) break;
+                } else {
+                    await loadAllAmazonTitles(onProgress);
+                    const result = collectAmazonGamesFromPage();
+                    result.found.forEach(game => collected.set(getStoredLibraryKey(game), game));
+                }
+            }
+        } finally {
+            if (getAmazonSelectedPeriod() !== originalPeriod) {
+                onProgress?.('Restoring your original collection period…');
+                await selectAmazonPeriod(originalPeriod);
+            }
+        }
+
+        if (collected.size === 0 && !isSmart) {
+            throw new Error('No delivered Amazon Games titles were found in any available collection period.');
+        }
+
+        const result = saveAmazonGames(Array.from(collected.values()));
+        return { ...result, periodCount: periodsScanned, scannedCount: collected.size, isSmart, stoppedAtExisting };
+    }
+
     function formatSyncDate(timestamp) {
         if (!timestamp || timestamp <= 0) return 'Never';
         try {
@@ -372,6 +781,278 @@
             return `${dateStr} ${timeStr}`;
         } catch (_) {
             return new Date(timestamp).toLocaleDateString();
+        }
+    }
+
+    function amazonRegionIdForOrigin(origin) {
+        const region = AMAZON_REGIONS.find(option => option.origin === origin);
+        return region ? region.id : (origin ? 'custom' : '');
+    }
+
+    function openAmazonRegionDialog(onSave) {
+        const existing = document.getElementById('steam-amazon-region-dialog');
+        if (existing) return;
+
+        const overlay = document.createElement('div');
+        overlay.id = 'steam-amazon-region-dialog';
+        overlay.style.cssText = 'position:fixed;inset:0;z-index:1000001;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(0,0,0,.65);font:14px/1.45 Arial,sans-serif;';
+
+        const panel = document.createElement('div');
+        panel.style.cssText = 'width:min(420px,100%);padding:20px;border:1px solid #66527a;border-radius:8px;background:#17121f;color:#fff;box-shadow:0 12px 40px rgba(0,0,0,.6);';
+
+        const title = document.createElement('div');
+        title.textContent = 'Choose your Amazon Games region';
+        title.style.cssText = 'font-size:18px;font-weight:700;margin-bottom:8px;';
+
+        const description = document.createElement('div');
+        description.textContent = 'This selects the Amazon store used by the sync link. You can change it later from the userscript menu.';
+        description.style.cssText = 'color:#c6bdce;margin-bottom:14px;';
+
+        const select = document.createElement('select');
+        select.style.cssText = 'width:100%;padding:9px;border:1px solid #66527a;border-radius:4px;background:#241d2d;color:#fff;';
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = 'Select a region';
+        select.appendChild(placeholder);
+        AMAZON_REGIONS.forEach(region => {
+            const option = document.createElement('option');
+            option.value = region.id;
+            option.textContent = region.label;
+            select.appendChild(option);
+        });
+
+        const customUrl = document.createElement('input');
+        customUrl.type = 'url';
+        customUrl.placeholder = 'https://luna.amazon.example';
+        customUrl.autocomplete = 'url';
+        customUrl.style.cssText = 'display:none;width:100%;box-sizing:border-box;margin-top:9px;padding:9px;border:1px solid #66527a;border-radius:4px;background:#241d2d;color:#fff;';
+
+        const error = document.createElement('div');
+        error.style.cssText = 'min-height:18px;margin-top:7px;color:#ff8c8c;font-size:12px;';
+
+        const actions = document.createElement('div');
+        actions.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:12px;';
+        const cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.textContent = 'Cancel';
+        cancel.style.cssText = 'padding:8px 12px;border:1px solid #62566b;border-radius:4px;background:#2b2432;color:#eee;cursor:pointer;';
+        const save = document.createElement('button');
+        save.type = 'button';
+        save.textContent = 'Save region';
+        save.style.cssText = 'padding:8px 12px;border:1px solid #f0a42b;border-radius:4px;background:#f0a42b;color:#201407;font-weight:700;cursor:pointer;';
+
+        const savedOrigin = getAmazonRegionOrigin();
+        const currentOrigin = isAmazonCollectionHost(location.hostname)
+            ? location.origin
+            : '';
+        const initialOrigin = savedOrigin || currentOrigin;
+        select.value = amazonRegionIdForOrigin(initialOrigin);
+        if (select.value === 'custom') customUrl.value = initialOrigin;
+        customUrl.style.display = select.value === 'custom' ? 'block' : 'none';
+
+        select.addEventListener('change', function () {
+            customUrl.style.display = select.value === 'custom' ? 'block' : 'none';
+            error.textContent = '';
+        });
+        cancel.addEventListener('click', () => overlay.remove());
+        overlay.addEventListener('click', event => {
+            if (event.target === overlay) overlay.remove();
+        });
+        save.addEventListener('click', function () {
+            let origin = '';
+            if (select.value === 'custom') {
+                try {
+                    let value = customUrl.value.trim();
+                    if (value && !/^https?:\/\//i.test(value)) value = `https://${value}`;
+                    const url = new URL(value);
+                    if (url.protocol !== 'https:' || !isAmazonCollectionHost(url.hostname)) {
+                        throw new Error('Use an HTTPS Luna/Amazon Games URL.');
+                    }
+                    origin = url.origin;
+                } catch (validationError) {
+                    error.textContent = validationError.message || 'Enter a valid Amazon Games URL.';
+                    return;
+                }
+            } else {
+                const region = AMAZON_REGIONS.find(option => option.id === select.value);
+                origin = region && region.origin;
+            }
+
+            if (!origin) {
+                error.textContent = 'Choose your Amazon region first.';
+                return;
+            }
+            GM_setValue(AMAZON_REGION_KEY, origin);
+            overlay.remove();
+            if (typeof onSave === 'function') onSave(origin);
+        });
+
+        actions.appendChild(cancel);
+        actions.appendChild(save);
+        panel.appendChild(title);
+        panel.appendChild(description);
+        panel.appendChild(select);
+        panel.appendChild(customUrl);
+        panel.appendChild(error);
+        panel.appendChild(actions);
+        overlay.appendChild(panel);
+        document.body.appendChild(overlay);
+    }
+
+    function openAmazonCollectionTab() {
+        const destination = getAmazonGamesCollectionUrl();
+        if (destination) {
+            window.open(destination, '_blank', 'noopener,noreferrer');
+            return;
+        }
+        openAmazonRegionDialog(origin => {
+            window.open(`${origin}/claims/my-collection`, '_blank', 'noopener,noreferrer');
+        });
+    }
+
+    function registerAmazonRegionMenuCommand() {
+        if (typeof GM_registerMenuCommand !== 'function') return;
+        GM_registerMenuCommand('Set Amazon Games region', function () {
+            openAmazonRegionDialog();
+        });
+    }
+
+    function createAmazonSyncUI() {
+        if (document.getElementById('steam-amazon-sync-wrapper') || !document.body) return;
+
+        const wrapper = document.createElement('div');
+        wrapper.id = 'steam-amazon-sync-wrapper';
+        wrapper.style.cssText = `
+            position: fixed;
+            right: 20px;
+            bottom: 20px;
+            z-index: 999999;
+            width: min(320px, calc(100vw - 40px));
+            padding: 12px;
+            box-sizing: border-box;
+            border: 1px solid #5b3a91;
+            border-radius: 6px;
+            background: #17121f;
+            color: #fff;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, .55);
+            font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+        `;
+
+        const heading = document.createElement('div');
+        heading.textContent = 'Amazon Games Ownership';
+        heading.style.cssText = 'font-size:14px;font-weight:700;margin-bottom:4px;';
+
+        const status = document.createElement('div');
+        function updateSavedStatus() {
+            const library = getAmazonLibrary();
+            status.textContent = `Region: ${getAmazonRegionLabel()} · Saved titles: ${library.length} · Last sync: ${formatSyncDate(getAmazonSyncTime())}`;
+        }
+        updateSavedStatus();
+        status.style.cssText = 'color:#c6bdce;margin-bottom:9px;';
+
+        const regionButton = document.createElement('button');
+        regionButton.type = 'button';
+        regionButton.textContent = 'Change Amazon region';
+        regionButton.style.cssText = 'padding:0;border:0;background:none;color:#ffd27a;text-decoration:underline;cursor:pointer;margin-bottom:9px;';
+        regionButton.addEventListener('click', function () {
+            openAmazonRegionDialog(updateSavedStatus);
+        });
+
+        const syncButtons = document.createElement('div');
+        syncButtons.style.cssText = 'display:flex;gap:8px;';
+        const quickSyncButton = document.createElement('button');
+        quickSyncButton.type = 'button';
+        quickSyncButton.textContent = 'Quick Sync';
+        const fullSyncButton = document.createElement('button');
+        fullSyncButton.type = 'button';
+        fullSyncButton.textContent = 'Full Sync';
+        [quickSyncButton, fullSyncButton].forEach(button => {
+            button.style.cssText = 'flex:1;padding:8px 7px;border:1px solid #f0a42b;border-radius:4px;background:#f0a42b;color:#201407;font-weight:700;cursor:pointer;';
+        });
+        syncButtons.appendChild(quickSyncButton);
+        syncButtons.appendChild(fullSyncButton);
+
+        async function runSync(isFullSync) {
+            quickSyncButton.disabled = true;
+            fullSyncButton.disabled = true;
+            quickSyncButton.textContent = 'Syncing…';
+            try {
+                const result = await syncAmazonLibraryFromAllPeriods({
+                    isFullSync,
+                    onProgress: message => {
+                        status.textContent = message;
+                    }
+                });
+                const added = result.addedCount === 1 ? '1 new title' : `${result.addedCount} new titles`;
+                if (result.isSmart) {
+                    status.textContent = result.stoppedAtExisting
+                        ? `Quick sync complete. Added ${added}; stopped at a previously synced title across ${result.periodCount} period(s).`
+                        : `Quick sync complete. Added ${added} across ${result.periodCount} period(s); no older saved title was reached.`;
+                } else if (isFullSync) {
+                    status.textContent = `Full sync complete. Added ${added} across ${result.periodCount} period(s).`;
+                } else {
+                    status.textContent = `No Amazon titles were saved yet, so Quick Sync completed an initial full scan. Saved ${result.library.length} title(s).`;
+                }
+            } catch (error) {
+                status.textContent = error.message || String(error);
+            } finally {
+                quickSyncButton.disabled = false;
+                fullSyncButton.disabled = false;
+                quickSyncButton.textContent = 'Quick Sync';
+                fullSyncButton.textContent = 'Full Sync';
+            }
+        }
+
+        function startSync() {
+            const origin = getAmazonRegionOrigin();
+            if (!origin) {
+                openAmazonRegionDialog(selectedOrigin => {
+                    updateSavedStatus();
+                    if (selectedOrigin !== location.origin) {
+                        window.location.assign(`${selectedOrigin}/claims/my-collection`);
+                    } else {
+                        runSync(false);
+                    }
+                });
+            } else if (origin !== location.origin) {
+                window.location.assign(`${origin}/claims/my-collection`);
+            } else {
+                runSync(false);
+            }
+        }
+
+        quickSyncButton.addEventListener('click', startSync);
+        fullSyncButton.addEventListener('click', function () {
+            const origin = getAmazonRegionOrigin();
+            if (!origin) {
+                openAmazonRegionDialog(selectedOrigin => {
+                    updateSavedStatus();
+                    if (selectedOrigin !== location.origin) {
+                        window.location.assign(`${selectedOrigin}/claims/my-collection`);
+                    } else {
+                        runSync(true);
+                    }
+                });
+            } else if (origin !== location.origin) {
+                window.location.assign(`${origin}/claims/my-collection`);
+            } else {
+                runSync(true);
+            }
+        });
+
+        wrapper.appendChild(heading);
+        wrapper.appendChild(status);
+        wrapper.appendChild(regionButton);
+        wrapper.appendChild(syncButtons);
+        document.body.appendChild(wrapper);
+
+        if (!getAmazonRegionOrigin()) {
+            openAmazonRegionDialog(selectedOrigin => {
+                updateSavedStatus();
+                if (selectedOrigin !== location.origin) {
+                    window.location.assign(`${selectedOrigin}/claims/my-collection`);
+                }
+            });
         }
     }
 
@@ -854,9 +1535,21 @@
     function createEditionInfoIcon(platform, matches) {
         if (!matches || matches.length === 0) return null;
 
-        const storeName = platform === 'epic' ? 'Epic Games' : 'GOG';
-        const accentColor = platform === 'epic' ? '#0074e4' : '#7a35d9';
-        const accentBorder = platform === 'epic' ? '#4aa3ff' : '#b185e8';
+        const storeName = platform === 'epic'
+            ? 'Epic Games'
+            : platform === 'gog'
+                ? 'GOG'
+                : 'Amazon Games';
+        const accentColor = platform === 'epic'
+            ? '#0074e4'
+            : platform === 'gog'
+                ? '#7a35d9'
+                : '#f0a42b';
+        const accentBorder = platform === 'epic'
+            ? '#4aa3ff'
+            : platform === 'gog'
+                ? '#b185e8'
+                : '#ffd27a';
 
         const btn = document.createElement('span');
         btn.className = `steam-${platform}-edition-info-btn`;
@@ -1031,13 +1724,25 @@
         return btn;
     }
 
+    function formatOwnedVersions(matches, fallbackTitle) {
+        const versions = (matches || []).map(match => {
+            const title = match.original || fallbackTitle || '';
+            if (!match.edition || normalizeTitle(title).includes(normalizeTitle(match.edition))) {
+                return title;
+            }
+            return `${title} — ${match.edition}`;
+        }).filter(Boolean);
+
+        return versions.length > 0 ? versions.join('\n') : (fallbackTitle || 'Unknown version');
+    }
+
     /*
      * Renders a single unified indicator on Steam Game Pages:
      * Owned: [Epic Icon] (?) [GOG Icon] (?)
      * Shows icon for store where owned, else X (or single X if not owned on both).
      * Includes a down arrow before Owned for store updater dropdown.
      */
-    function renderUnifiedOwnershipBox(steamTitle, epicOwnedTitle, gogOwnedTitle, epicMatches = [], gogMatches = []) {
+    function renderUnifiedOwnershipBox(steamTitle, epicOwnedTitle, gogOwnedTitle, epicMatches = [], gogMatches = [], amazonOwnedTitle = null, amazonMatches = []) {
         const titleElement = getSteamTitleElement();
         if (!titleElement) return false;
 
@@ -1052,7 +1757,8 @@
 
         const hasEpic = !!epicOwnedTitle;
         const hasGog = !!gogOwnedTitle;
-        const hasAny = hasEpic || hasGog;
+        const hasAmazon = !!amazonOwnedTitle;
+        const hasAny = hasEpic || hasGog || hasAmazon;
 
         const container = document.createElement('span');
         container.id = 'steam-ownership-indicator';
@@ -1132,8 +1838,10 @@
 
         const epicSyncTime = getEpicSyncTime();
         const gogSyncTime = getGogSyncTime();
+        const amazonSyncTime = getAmazonSyncTime();
         const epicLib = getEpicLibrary();
         const gogLib = getGogLibrary();
+        const amazonLib = getAmazonLibrary();
 
         dropdownMenu.innerHTML = `
             <div style="font-weight: bold; margin-bottom: 6px; font-size: 11px; text-transform: uppercase; color: #8f98a0; letter-spacing: 0.5px;">
@@ -1178,7 +1886,42 @@
                 </div>
                 <span style="font-size: 14px; margin-left: 6px; color: #b185e8;">↗</span>
             </a>
+            <a data-a-target="amazon-region-collection-link" href="${getAmazonGamesCollectionUrl() || '#'}" target="_blank" rel="noopener noreferrer" style="
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 6px 8px;
+                background: #382a17;
+                border-radius: 4px;
+                color: #ffffff;
+                text-decoration: none;
+                margin-top: 6px;
+                border: 1px solid #78551e;
+            ">
+                <div>
+                    <div style="font-weight: 600; color: #ffd27a;">Sync Amazon Games</div>
+                    <div style="font-size: 10px; color: #b8a98d; margin-top: 2px;">
+                        Last: ${formatSyncDate(amazonSyncTime)} (${amazonLib.length} games)
+                    </div>
+                </div>
+                <span style="font-size: 14px; margin-left: 6px; color: #ffd27a;">↗</span>
+            </a>
+            <button type="button" data-a-target="change-amazon-region" style="margin-top:5px;padding:2px 0;border:0;background:none;color:#ffd27a;font:11px Arial,sans-serif;text-decoration:underline;cursor:pointer;">
+                Change Amazon region (${getAmazonRegionLabel()})
+            </button>
         `;
+
+        dropdownMenu.querySelector('[data-a-target="amazon-region-collection-link"]')
+            ?.addEventListener('click', function (event) {
+                event.preventDefault();
+                openAmazonCollectionTab();
+            });
+        dropdownMenu.querySelector('[data-a-target="change-amazon-region"]')
+            ?.addEventListener('click', function (event) {
+                event.preventDefault();
+                event.stopPropagation();
+                openAmazonRegionDialog();
+            });
 
         function toggleDropdown(e) {
             e.stopPropagation();
@@ -1219,7 +1962,7 @@
             epicLink.href = getEpicSearchUrl(epicOwnedTitle || steamTitle);
             epicLink.target = '_blank';
             epicLink.rel = 'noopener noreferrer';
-            epicLink.title = `Owned on Epic Games Store ("${epicOwnedTitle}")\nClick to search on Epic Games Store`;
+            epicLink.title = `Owned version(s) on Epic Games Store:\n${formatOwnedVersions(epicMatches, epicOwnedTitle)}\nClick to search on Epic Games Store`;
             epicLink.innerHTML = `
                 <div style="display: inline-flex; align-items: center; gap: 4px;">
                     <svg width="11" height="13" viewBox="0 0 24 28" fill="none" style="display:block; flex-shrink: 0;">
@@ -1270,7 +2013,7 @@
             gogLink.href = getGogSearchUrl(gogOwnedTitle || steamTitle);
             gogLink.target = '_blank';
             gogLink.rel = 'noopener noreferrer';
-            gogLink.title = `Owned on GOG ("${gogOwnedTitle}")\nClick to search on GOG`;
+            gogLink.title = `Owned version(s) on GOG:\n${formatOwnedVersions(gogMatches, gogOwnedTitle)}\nClick to search on GOG`;
             gogLink.innerHTML = `
                 <div style="display: inline-flex; align-items: center; gap: 4px;">
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" style="display:block; flex-shrink: 0;">
@@ -1314,13 +2057,35 @@
             container.appendChild(gogGroup);
         }
 
+        if (hasAmazon) {
+            const amazonGroup = document.createElement('span');
+            amazonGroup.style.cssText = 'display:inline-flex;align-items:center;gap:3px;';
+            const amazonLink = document.createElement('a');
+            amazonLink.href = getAmazonGamesCollectionUrl() || '#';
+            amazonLink.target = '_blank';
+            amazonLink.rel = 'noopener noreferrer';
+            amazonLink.title = `Owned version(s) in your Amazon Games library:\n${formatOwnedVersions(amazonMatches, amazonOwnedTitle)}\nClick to open Amazon Games collection`;
+            amazonLink.textContent = 'AMAZON';
+            amazonLink.addEventListener('click', function (event) {
+                event.preventDefault();
+                openAmazonCollectionTab();
+            });
+            amazonLink.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;height:20px;padding:0 6px;background:#f0a42b;border:1px solid #ffd27a;border-radius:3px;color:#201407;font:800 10px Arial,sans-serif;letter-spacing:.4px;text-decoration:none;box-shadow:0 1px 3px rgba(0,0,0,.35);';
+            amazonGroup.appendChild(amazonLink);
+            if (amazonMatches.length > 0) {
+                const info = createEditionInfoIcon('amazon', amazonMatches);
+                if (info) amazonGroup.appendChild(info);
+            }
+            container.appendChild(amazonGroup);
+        }
+
         // If not owned on both stores, display a single X
         if (!hasAny) {
             const notOwnedBadge = document.createElement('a');
             notOwnedBadge.href = getEpicSearchUrl(steamTitle);
             notOwnedBadge.target = '_blank';
             notOwnedBadge.rel = 'noopener noreferrer';
-            notOwnedBadge.title = 'Not owned on Epic or GOG\nClick to search on Epic Games Store';
+            notOwnedBadge.title = 'Not owned on Epic, GOG, or Amazon Games\nClick to search on Epic Games Store';
             notOwnedBadge.textContent = '✕';
             notOwnedBadge.style.cssText = `
                 display: inline-flex;
@@ -1372,10 +2137,15 @@
             gogMatches = findGogOwnedMatches(comparisonTitle);
         }
 
+        const amazonMatches = isAmazonCacheValid()
+            ? findAmazonOwnedMatches(comparisonTitle)
+            : [];
+
         const epicOwnedTitle = epicMatches.length > 0 ? epicMatches[0].original : null;
         const gogOwnedTitle = gogMatches.length > 0 ? gogMatches[0].original : null;
+        const amazonOwnedTitle = amazonMatches.length > 0 ? amazonMatches[0].original : null;
 
-        renderUnifiedOwnershipBox(steamTitle, epicOwnedTitle, gogOwnedTitle, epicMatches, gogMatches);
+        renderUnifiedOwnershipBox(steamTitle, epicOwnedTitle, gogOwnedTitle, epicMatches, gogMatches, amazonOwnedTitle, amazonMatches);
     }
 
     function isSteamPopup(element) {
@@ -1646,25 +2416,39 @@
         return bestCard;
     }
 
-    function createCardBadge(platform, state, tooltip) {
+    function createCardBadge(platform, state, tooltip, editionWarning = null) {
         if (state !== 'owned') {
             return null;
         }
 
         const badge = document.createElement('span');
-        badge.className =
-            platform === 'epic'
-                ? EPIC_CARD_BADGE_CLASS
-                : GOG_CARD_BADGE_CLASS;
+        badge.className = platform === 'epic'
+            ? EPIC_CARD_BADGE_CLASS
+            : platform === 'gog'
+                ? GOG_CARD_BADGE_CLASS
+                : AMAZON_CARD_BADGE_CLASS;
 
-        const label = platform === 'epic' ? 'Epic' : 'GOG';
-        badge.textContent = `${label} ✓`;
+        const label = platform === 'epic' ? 'Epic' : platform === 'gog' ? 'GOG' : 'Amazon';
+        badge.textContent = label;
         badge.title = tooltip;
+        badge.setAttribute('role', 'button');
+        badge.setAttribute('tabindex', '0');
+        badge.setAttribute('aria-label', `${label} owned${editionWarning ? ', edition needs confirmation' : ''}. Click to view owned versions.`);
+        if (editionWarning) {
+            const questionMark = document.createElement('span');
+            questionMark.textContent = '?';
+            questionMark.setAttribute('aria-hidden', 'true');
+            questionMark.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:12px;height:12px;margin-left:3px;border:1px solid currentColor;border-radius:50%;font-size:9px;line-height:1;font-weight:800;';
+            badge.appendChild(questionMark);
+        }
+        const color = platform === 'amazon' ? '#f0a42b' : '#67d46a';
+        const textColor = platform === 'amazon' ? '#201407' : '#1b2838';
 
         badge.style.cssText = `
             display: inline-flex;
             align-items: center;
             justify-content: center;
+            gap: 2px;
             box-sizing: border-box;
             height: 20px;
             min-width: 40px;
@@ -1672,35 +2456,81 @@
             margin-left: 5px;
             margin-right: 4px;
             border-radius: 3px;
-            border: 1px solid #67d46a;
-            background: #67d46a;
-            color: #1b2838;
+            border: 1px solid ${color};
+            background: ${color};
+            color: ${textColor};
             font-family: Arial,sans-serif;
             font-size: 10px;
             font-weight: 700;
             line-height: 18px;
             white-space: nowrap;
-            pointer-events: none;
+            pointer-events: auto;
+            cursor: help;
             user-select: none;
             vertical-align: middle;
             z-index: 50;
         `;
 
+        badge.addEventListener('click', function (event) {
+            event.preventDefault();
+            event.stopPropagation();
+            toggleCardBadgeTooltip(badge, tooltip);
+        });
+        badge.addEventListener('keydown', function (event) {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                event.stopPropagation();
+                toggleCardBadgeTooltip(badge, tooltip);
+            }
+        });
+
         return badge;
     }
 
-    function insertCardBadges(card, epicOwnedTitle, gogOwnedTitle) {
+    function createOwnershipBadgeTooltip(platform, matches, fallbackTitle, pageTitle) {
+        const storeName = platform === 'epic'
+            ? 'Epic Games Store'
+            : platform === 'gog'
+                ? 'GOG'
+                : 'Amazon Games';
+        const versionLines = (matches || []).map(match => {
+            const title = match.original || fallbackTitle || 'Unknown title';
+            const version = match.edition || 'edition not specified in the saved store title';
+            return `• ${title} — ${version}`;
+        });
+        const libraryDetails = versionLines.length > 0
+            ? versionLines.join('\n')
+            : (fallbackTitle || 'Unknown title');
+        const editionWarning = getEditionMatchWarning(pageTitle, matches);
+        return `${storeName} library match:\n${libraryDetails}\nMatched page title: ${pageTitle || fallbackTitle || 'Unknown title'}${editionWarning ? `\n? ${editionWarning}` : ''}`;
+    }
+
+    function getEditionMatchWarning(pageTitle, matches) {
+        const pageEdition = pageTitle
+            ? detectEditionName(pageTitle, getComparisonTitle(pageTitle))
+            : null;
+        if (!pageEdition) return null;
+
+        const matchingStoreEdition = (matches || []).some(match =>
+            match.edition && normalizeTitle(match.edition) === normalizeTitle(pageEdition)
+        );
+        return matchingStoreEdition
+            ? null
+            : `The page lists ${pageEdition}, but the saved store title does not confirm that edition.`;
+    }
+
+    function insertCardBadges(card, epicOwnedTitle, gogOwnedTitle, amazonOwnedTitle, pageTitle, matches) {
         if (!card) return;
 
         card
             .querySelectorAll(
-                `.${EPIC_CARD_BADGE_CLASS}, .${GOG_CARD_BADGE_CLASS}, .steam-platform-badges`
+                `.${EPIC_CARD_BADGE_CLASS}, .${GOG_CARD_BADGE_CLASS}, .${AMAZON_CARD_BADGE_CLASS}, .steam-platform-badges`
             )
             .forEach(function (badge) {
                 badge.remove();
             });
 
-        if (!epicOwnedTitle && !gogOwnedTitle) {
+        if (!epicOwnedTitle && !gogOwnedTitle && !amazonOwnedTitle) {
             return;
         }
 
@@ -1736,7 +2566,8 @@
                 const badge = createCardBadge(
                     'epic',
                     'owned',
-                    `You own "${epicOwnedTitle}" on Epic Games Store.`
+                    createOwnershipBadgeTooltip('epic', matches.epic, epicOwnedTitle, pageTitle),
+                    getEditionMatchWarning(pageTitle, matches.epic)
                 );
                 if (badge) titleElement.appendChild(badge);
             }
@@ -1745,7 +2576,18 @@
                 const badge = createCardBadge(
                     'gog',
                     'owned',
-                    `You own "${gogOwnedTitle}" through GOG.`
+                    createOwnershipBadgeTooltip('gog', matches.gog, gogOwnedTitle, pageTitle),
+                    getEditionMatchWarning(pageTitle, matches.gog)
+                );
+                if (badge) titleElement.appendChild(badge);
+            }
+
+            if (amazonOwnedTitle) {
+                const badge = createCardBadge(
+                    'amazon',
+                    'owned',
+                    createOwnershipBadgeTooltip('amazon', matches.amazon, amazonOwnedTitle, pageTitle),
+                    getEditionMatchWarning(pageTitle, matches.amazon)
                 );
                 if (badge) titleElement.appendChild(badge);
             }
@@ -1777,7 +2619,8 @@
             const epicBadge = createCardBadge(
                 'epic',
                 'owned',
-                `You own "${epicOwnedTitle}" on Epic Games Store.`
+                createOwnershipBadgeTooltip('epic', matches.epic, epicOwnedTitle, pageTitle),
+                getEditionMatchWarning(pageTitle, matches.epic)
             );
             if (epicBadge) {
                 epicBadge.style.margin = '0';
@@ -1789,11 +2632,25 @@
             const gogBadge = createCardBadge(
                 'gog',
                 'owned',
-                `You own "${gogOwnedTitle}" through GOG.`
+                createOwnershipBadgeTooltip('gog', matches.gog, gogOwnedTitle, pageTitle),
+                getEditionMatchWarning(pageTitle, matches.gog)
             );
             if (gogBadge) {
                 gogBadge.style.margin = '0';
                 badges.appendChild(gogBadge);
+            }
+        }
+
+        if (amazonOwnedTitle) {
+            const amazonBadge = createCardBadge(
+                'amazon',
+                'owned',
+                createOwnershipBadgeTooltip('amazon', matches.amazon, amazonOwnedTitle, pageTitle),
+                getEditionMatchWarning(pageTitle, matches.amazon)
+            );
+            if (amazonBadge) {
+                amazonBadge.style.margin = '0';
+                badges.appendChild(amazonBadge);
             }
         }
 
@@ -1824,7 +2681,11 @@
             gogMatches = findGogOwnedMatches(normalized);
         }
 
-        if (epicMatches.length === 0 && gogMatches.length === 0) {
+        const amazonMatches = isAmazonCacheValid()
+            ? findAmazonOwnedMatches(normalized)
+            : [];
+
+        if (epicMatches.length === 0 && gogMatches.length === 0 && amazonMatches.length === 0) {
             return;
         }
 
@@ -1836,7 +2697,15 @@
             ? gogMatches.map(m => m.original + (m.edition ? ` [${m.edition}]` : '')).join(', ')
             : null;
 
-        insertCardBadges(card, epicOwnedTitle, gogOwnedTitle);
+        const amazonOwnedTitle = amazonMatches.length > 0
+            ? amazonMatches.map(m => m.original + (m.edition ? ` [${m.edition}]` : '')).join(', ')
+            : null;
+
+        insertCardBadges(card, epicOwnedTitle, gogOwnedTitle, amazonOwnedTitle, title, {
+            epic: epicMatches,
+            gog: gogMatches,
+            amazon: amazonMatches
+        });
     }
 
     function scanKnownSteamCards() {
@@ -1936,8 +2805,11 @@
         const gogMatches = isGogCacheValid()
             ? findGogOwnedMatches(comparisonTitle)
             : [];
+        const amazonMatches = isAmazonCacheValid()
+            ? findAmazonOwnedMatches(comparisonTitle)
+            : [];
 
-        if (epicMatches.length === 0 && gogMatches.length === 0) return;
+        if (epicMatches.length === 0 && gogMatches.length === 0 && amazonMatches.length === 0) return;
 
         const badgeGroup = document.createElement('span');
         badgeGroup.className = GG_DEALS_BADGES_CLASS;
@@ -1946,24 +2818,29 @@
             : 'display:inline-flex;align-items:center;gap:3px;margin-left:6px;vertical-align:middle;';
 
         if (epicMatches.length > 0) {
-            const editions = epicMatches.map(match =>
-                match.original + (match.edition ? ` [${match.edition}]` : '')
-            ).join(', ');
             badgeGroup.appendChild(createCardBadge(
                 'epic',
                 'owned',
-                `You own ${editions} on Epic Games Store.`
+                createOwnershipBadgeTooltip('epic', epicMatches, null, title),
+                getEditionMatchWarning(title, epicMatches)
             ));
         }
 
         if (gogMatches.length > 0) {
-            const editions = gogMatches.map(match =>
-                match.original + (match.edition ? ` [${match.edition}]` : '')
-            ).join(', ');
             badgeGroup.appendChild(createCardBadge(
                 'gog',
                 'owned',
-                `You own ${editions} through GOG.`
+                createOwnershipBadgeTooltip('gog', gogMatches, null, title),
+                getEditionMatchWarning(title, gogMatches)
+            ));
+        }
+
+        if (amazonMatches.length > 0) {
+            badgeGroup.appendChild(createCardBadge(
+                'amazon',
+                'owned',
+                createOwnershipBadgeTooltip('amazon', amazonMatches, null, title),
+                getEditionMatchWarning(title, amazonMatches)
             ));
         }
 
@@ -2744,6 +3621,8 @@
         }
     }
 
+    registerAmazonRegionMenuCommand();
+
     console.log(
         '[Steam → Epic + GOG] Script loaded:',
         location.href
@@ -2842,6 +3721,24 @@
             observeGgDealsPage();
         } else {
             window.addEventListener('DOMContentLoaded', observeGgDealsPage, { once: true });
+        }
+    } else if (isAmazonGamesPage()) {
+        const initAmazon = function () {
+            createAmazonSyncUI();
+            const observer = new MutationObserver(function () {
+                if (!document.getElementById('steam-amazon-sync-wrapper')) {
+                    createAmazonSyncUI();
+                }
+            });
+            if (document.body) {
+                observer.observe(document.body, { childList: true, subtree: true });
+            }
+        };
+
+        if (document.body) {
+            initAmazon();
+        } else {
+            window.addEventListener('DOMContentLoaded', initAmazon, { once: true });
         }
     }
 
