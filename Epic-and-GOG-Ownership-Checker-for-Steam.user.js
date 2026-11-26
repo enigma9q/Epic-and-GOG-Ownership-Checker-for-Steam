@@ -1,17 +1,18 @@
 // ==UserScript==
 // @name         Epic and GOG Ownership Checker for Steam
 // @namespace    https://steam-multi-ownership.local/
-// @version      5.0
+// @version      6.0
 // @author       Theodoros OhYeah (enigma9q), ChatGPT, Codex & Antigravity
 // @description  Shows Epic, GOG and Amazon Games ownership on Steam and GG.deals
 // @match        https://store.steampowered.com/*
 // @match        https://accounts.epicgames.com/account/*
 // @match        https://www.epicgames.com/account/*
+// @match        https://store.epicgames.com/*
 // @match        https://www.gog.com/*
 // @match        https://gog.com/*
 // @match        https://embed.gog.com/*
-// @match        https://gg.deals/game/*
-// @match        https://gg.deals/wishlist/*
+// @match        https://gg.deals/*
+// @match        https://www.gg.deals/*
 // @match        https://luna.amazon.com.be/claims/my-collection*
 // @match        https://luna.amazon.com/claims/my-collection*
 // @match        https://luna.amazon.ca/claims/my-collection*
@@ -146,8 +147,18 @@
     function isEpicPage() {
         return (
             location.hostname === 'accounts.epicgames.com' ||
-            location.hostname === 'www.epicgames.com'
+            location.hostname === 'www.epicgames.com' ||
+            location.hostname === 'store.epicgames.com'
         );
+    }
+
+    function isEpicAccountPage() {
+        return location.hostname === 'accounts.epicgames.com' ||
+            (location.hostname === 'www.epicgames.com' && location.pathname.startsWith('/account/'));
+    }
+
+    function isEpicProductPage() {
+        return location.hostname === 'store.epicgames.com' && /\/p\/[^/]+/i.test(location.pathname);
     }
 
     function isGogPage() {
@@ -158,12 +169,16 @@
         );
     }
 
+    function isGogProductPage() {
+        return /\/game\/[^/]+\/?$/i.test(location.pathname);
+    }
+
     function isSteamPage() {
         return location.hostname === 'store.steampowered.com';
     }
 
     function isGgDealsPage() {
-        return location.hostname === 'gg.deals';
+        return location.hostname === 'gg.deals' || location.hostname === 'www.gg.deals';
     }
 
     function isAmazonGamesPage() {
@@ -2519,6 +2534,169 @@
             : `The page lists ${pageEdition}, but the saved store title does not confirm that edition.`;
     }
 
+    function getCrossStoreMatches(title) {
+        const comparisonTitle = getComparisonTitle(title);
+        return {
+            epic: isEpicCacheValid() ? findEpicOwnedMatches(comparisonTitle) : [],
+            gog: isGogCacheValid() ? findGogOwnedMatches(comparisonTitle) : [],
+            amazon: isAmazonCacheValid() ? findAmazonOwnedMatches(comparisonTitle) : []
+        };
+    }
+
+    function createCrossStoreBadgeGroup(title, matches, className) {
+        const group = document.createElement('span');
+        group.className = className;
+        group.style.cssText = 'display:inline-flex;align-items:center;gap:4px;pointer-events:auto;';
+
+        [['epic', matches.epic], ['gog', matches.gog], ['amazon', matches.amazon]].forEach(function ([platform, ownedMatches]) {
+            if (!ownedMatches.length) return;
+            const badge = createCardBadge(
+                platform,
+                'owned',
+                createOwnershipBadgeTooltip(platform, ownedMatches, null, title),
+                getEditionMatchWarning(title, ownedMatches)
+            );
+            if (badge) {
+                badge.style.margin = '0';
+                group.appendChild(badge);
+            }
+        });
+        return group.children.length ? group : null;
+    }
+
+    function addCrossStoreBadgesBesideTitle(titleElement, title) {
+        if (!titleElement || !title) return false;
+        const matches = getCrossStoreMatches(title);
+        const group = createCrossStoreBadgeGroup(title, matches, 'steam-cross-store-inline-badges');
+        const existing = titleElement.nextElementSibling;
+        if (existing && existing.classList.contains('steam-cross-store-inline-badges')) existing.remove();
+        if (!group) return false;
+        titleElement.insertAdjacentElement('afterend', group);
+        return true;
+    }
+
+    function addCrossStoreBadgesOverImage(card, title) {
+        if (!card || !title) return false;
+        const matches = getCrossStoreMatches(title);
+        const group = createCrossStoreBadgeGroup(title, matches, 'steam-cross-store-image-badges');
+        const existing = card.querySelector('.steam-cross-store-image-badges');
+        if (existing) existing.remove();
+        if (!group) return false;
+
+        const image = card.querySelector('img');
+        if (!image) return false;
+        const imageLink = image.closest('a') || image.parentElement;
+        if (!imageLink) return false;
+        const computed = window.getComputedStyle(imageLink);
+        if (computed.position === 'static') imageLink.style.position = 'relative';
+        group.style.cssText += 'position:absolute;left:6px;top:6px;z-index:100;flex-wrap:wrap;max-width:calc(100% - 12px);';
+        imageLink.appendChild(group);
+        return true;
+    }
+
+    function scanCrossStoreSearchResults() {
+        const pageHost = location.hostname;
+        let gameLinks = [];
+        if (pageHost === 'gg.deals' || pageHost === 'www.gg.deals') {
+            gameLinks = [...document.querySelectorAll('a[href*="/game/"]')];
+        } else if (pageHost === 'www.gog.com' || pageHost === 'gog.com' || pageHost === 'embed.gog.com') {
+            gameLinks = [...document.querySelectorAll('a[href*="/game/"]')];
+        } else if (pageHost === 'store.epicgames.com') {
+            gameLinks = [...document.querySelectorAll('a[href*="/p/"]')];
+        } else if (pageHost === 'store.steampowered.com') {
+            gameLinks = [...document.querySelectorAll('a[href*="/app/"]')];
+        }
+
+        gameLinks.forEach(function (link) {
+            if (link.closest('.steam-cross-store-inline-badges, .steam-cross-store-image-badges, .steam-platform-badges')) return;
+            const searchArea = link.closest('[class*="search"], [class*="Search"], [id*="search"], [id*="Search"], [role="listbox"]');
+            if (!searchArea) return;
+            const title = cleanCardText(link.textContent) || getCardTitleFromAttributes(link) || getTitleFromSlug(link.getAttribute('href'));
+            if (!title || title.length > 150) return;
+            addCrossStoreBadgesBesideTitle(link, title);
+        });
+    }
+
+    function renderStorePageOwnedIndicator(titleElement, title) {
+        if (!titleElement || !title) return false;
+        const existing = titleElement.querySelector(':scope > #steam-ownership-indicator');
+        if (existing) existing.remove();
+
+        const matches = getCrossStoreMatches(title);
+        const group = createCrossStoreBadgeGroup(title, matches, 'steam-store-page-owned-badges');
+        if (!group) return false;
+
+        const container = document.createElement('span');
+        container.id = 'steam-ownership-indicator';
+        container.style.cssText = 'display:inline-flex;align-items:center;gap:6px;margin-left:12px;padding:3px 7px;border:1px solid rgba(90,70,115,.45);border-radius:4px;background:rgba(35,25,45,.12);vertical-align:middle;font:12px Arial,sans-serif;';
+        const label = document.createElement('span');
+        label.textContent = 'Owned:';
+        label.style.cssText = 'font-weight:700;color:inherit;';
+        container.append(label, group);
+        titleElement.style.display = 'inline-flex';
+        titleElement.style.alignItems = 'center';
+        titleElement.style.flexWrap = 'wrap';
+        titleElement.appendChild(container);
+        return true;
+    }
+
+    function getStoreProductTitleElement(platform) {
+        const selectors = platform === 'gog'
+            ? ['.productcard-basics__title', '.productcard-basics h1', 'main h1', 'h1']
+            : ['h1[data-testid*="title"]', 'h1[class*="title"]', 'main h1', 'h1'];
+        for (const selector of selectors) {
+            const element = document.querySelector(selector);
+            if (element && cleanCardText(element.textContent)) return element;
+        }
+        return null;
+    }
+
+    function getStoreProductTitle(element) {
+        if (element) {
+            const clone = element.cloneNode(true);
+            clone.querySelectorAll('#steam-ownership-indicator, .steam-cross-store-inline-badges').forEach(node => node.remove());
+            const heading = cleanCardText(clone.textContent);
+            if (heading) return heading;
+        }
+        const metaTitle = document.querySelector('meta[property="og:title"]')?.content;
+        if (metaTitle) return cleanCardText(metaTitle.replace(/\s*[|–-]\s*(GOG\.com|Epic Games Store).*$/i, ''));
+        const slug = location.pathname.match(/\/(?:game|p)\/([^/]+)/i);
+        if (!slug) return null;
+        try {
+            return cleanCardText(decodeURIComponent(slug[1]).replace(/[-_]/g, ' '));
+        } catch (_) {
+            return cleanCardText(slug[1].replace(/[-_]/g, ' '));
+        }
+    }
+
+    function scanStoreProductPage(platform) {
+        scanCrossStoreSearchResults();
+        const isProduct = platform === 'gog' ? isGogProductPage() : isEpicProductPage();
+        if (!isProduct) return;
+        const titleElement = getStoreProductTitleElement(platform);
+        const title = getStoreProductTitle(titleElement);
+        if (titleElement && title) renderStorePageOwnedIndicator(titleElement, title);
+    }
+
+    function observeStoreProductPage(platform) {
+        scanStoreProductPage(platform);
+        if (!document.body) return;
+        let timer = null;
+        const observer = new MutationObserver(function (mutations) {
+            const changed = mutations.some(mutation => [...mutation.addedNodes].some(node =>
+                node.nodeType !== Node.ELEMENT_NODE ||
+                !node.matches?.('#steam-ownership-indicator, .steam-cross-store-inline-badges')
+            ));
+            if (!changed) return;
+            clearTimeout(timer);
+            timer = setTimeout(() => scanStoreProductPage(platform), 250);
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+        setTimeout(() => scanStoreProductPage(platform), 500);
+        setTimeout(() => scanStoreProductPage(platform), 1500);
+        setTimeout(() => scanStoreProductPage(platform), 3000);
+    }
+
     function insertCardBadges(card, epicOwnedTitle, gogOwnedTitle, amazonOwnedTitle, pageTitle, matches) {
         if (!card) return;
 
@@ -2874,7 +3052,6 @@
             if (titleElement && title) {
                 addGgDealsOwnershipBadges(titleElement, title, { withAnchor: true });
             }
-            return;
         }
 
         if (/^\/wishlist(?:\/[^/]*)?\/?$/.test(location.pathname)) {
@@ -2883,9 +3060,58 @@
                 const title = (card && (card.getAttribute('data-game-title') || card.getAttribute('data-game-name'))) ||
                     titleElement.getAttribute('data-title-auto-hide') ||
                     titleElement.textContent.trim();
-                addGgDealsOwnershipBadges(titleElement, title);
+                if (!addCrossStoreBadgesOverImage(card, title)) {
+                    addGgDealsOwnershipBadges(titleElement, title);
+                }
             });
         }
+
+        const processedCards = new Set();
+        document.querySelectorAll('a[href*="/game/"]').forEach(function (gameLink) {
+            if (gameLink.closest('.game-header-box-single, .wishlist-container')) return;
+            const searchArea = gameLink.closest('[class*="search"], [class*="Search"], [id*="search"], [id*="Search"], [role="listbox"]');
+            const title = cleanCardText(gameLink.textContent) ||
+                getCardTitleFromAttributes(gameLink) ||
+                (() => {
+                    const slug = new URL(gameLink.href, location.href).pathname.match(/\/game\/([^/]+)/i);
+                    if (!slug) return null;
+                    try {
+                        return cleanCardText(decodeURIComponent(slug[1]).replace(/[-_]/g, ' '));
+                    } catch (_) {
+                        return cleanCardText(slug[1].replace(/[-_]/g, ' '));
+                    }
+                })();
+            if (!title || title.length > 150) return;
+
+            if (searchArea) {
+                addCrossStoreBadgesBesideTitle(gameLink, title);
+                return;
+            }
+
+            const cardSelector = [
+                '[data-game-title]', '[data-game-name]', '[data-container-game-id]',
+                '.game-list-item', '.game-item', '.game-card', '.game-info',
+                '.game-row', '.game-entry', '.search-result', '.search-result-item'
+            ].join(', ');
+            let card = gameLink.closest(cardSelector);
+            if (!card) {
+                let ancestor = gameLink.parentElement;
+                for (let depth = 0; ancestor && depth < 9; depth++, ancestor = ancestor.parentElement) {
+                    if (ancestor.querySelectorAll('a[href*="/game/"]').length === 1 && ancestor.querySelector('img')) {
+                        card = ancestor;
+                        break;
+                    }
+                }
+            }
+            if (!card || processedCards.has(card)) return;
+            processedCards.add(card);
+
+            const dataTitle = card.getAttribute('data-game-title') || card.getAttribute('data-game-name') || title;
+            if (!addCrossStoreBadgesOverImage(card, dataTitle)) {
+                addCrossStoreBadgesBesideTitle(gameLink, dataTitle);
+            }
+        });
+
     }
 
     function observeGgDealsPage() {
@@ -2898,7 +3124,9 @@
                 return Array.from(mutation.addedNodes || []).some(function (node) {
                     return node.nodeType !== Node.ELEMENT_NODE ||
                         (!node.classList.contains(GG_DEALS_BADGES_CLASS) &&
-                            !node.classList.contains(GG_DEALS_OWNERSHIP_ROW_CLASS));
+                            !node.classList.contains(GG_DEALS_OWNERSHIP_ROW_CLASS) &&
+                            !node.classList.contains('steam-cross-store-image-badges') &&
+                            !node.classList.contains('steam-cross-store-inline-badges'));
                 });
             });
             if (!hasPageContentChange) return;
@@ -3628,7 +3856,7 @@
         location.href
     );
 
-    if (isEpicPage()) {
+    if (isEpicPage() && isEpicAccountPage()) {
         const initEpic = function () {
             createEpicSyncUI();
             const observer = new MutationObserver(function () {
@@ -3647,9 +3875,15 @@
             window.addEventListener('DOMContentLoaded', initEpic, { once: true });
         }
 
-    } else if (isGogPage()) {
+    } else if (isEpicPage()) {
+        const initEpicStore = () => observeStoreProductPage('epic');
+        if (document.body) initEpicStore();
+        else window.addEventListener('DOMContentLoaded', initEpicStore, { once: true });
+
+    } else if (isGogPage() && !isGogProductPage()) {
         const initGog = function () {
             createGogSyncUI();
+            observeStoreProductPage('gog');
             const observer = new MutationObserver(function () {
                 if (!document.getElementById('steam-gog-sync-wrapper')) {
                     createGogSyncUI();
@@ -3665,6 +3899,11 @@
         } else {
             window.addEventListener('DOMContentLoaded', initGog, { once: true });
         }
+
+    } else if (isGogPage()) {
+        const initGogStore = () => observeStoreProductPage('gog');
+        if (document.body) initGogStore();
+        else window.addEventListener('DOMContentLoaded', initGogStore, { once: true });
 
     } else if (isSteamPage()) {
 

@@ -17,7 +17,8 @@ A Tampermonkey userscript that shows Epic Games Store, GOG, and Amazon Games own
 - **Header-Integrated Sync Buttons**: Adds a sleek **`Sync to Steam`** button next to **Purchases** on Epic Games Store and **My Collection** on GOG, with a compact dropdown popup displaying owned titles, last purchase, and exact last sync timestamp.
 - **Amazon Games Support**: Syncs titles marked “Delivered to your Amazon Games library” (or with a crown marker) from the Amazon Games collection page and stores ownership locally.
 - **Steam Cards Support**: Shows `Epic`, `GOG`, and `Amazon` badges on search results, recommendations, and similar-game cards. Click a badge to view owned version titles; a `?` marks editions the store entry does not confirm.
-- **GG.deals Support**: Shows clickable ownership badges on individual game pages and wishlist entries, including filtered wishlist views, with `?` markers for unconfirmed editions.
+- **GG.deals Support**: Shows ownership badges across GG.deals game listings, search results, game pages, and wishlist entries. Listing badges sit on the game artwork; search results show them beside the title.
+- **Epic and GOG Game Pages**: Shows an `Owned:` indicator beside game titles when that game matches one of your synced libraries. Product pages show the ownership indicator without the library sync button.
 - **Edition-Preserving Sync**: Stores distinct editions separately, so the tooltip can list every owned edition and Quick Sync can detect a newly purchased edition of an already owned game.
 - **Local Storage Caching**: Caches all three stores' ownership data locally using Tampermonkey storage.
 - **Privacy Friendly**: Uses your existing store login sessions and does not transmit ownership data to third parties.
