@@ -1,10 +1,13 @@
 // ==UserScript==
 // @name         Epic and GOG Ownership Checker for Steam
 // @namespace    https://steam-multi-ownership.local/
-// @version      6.0
+// @version      6.1.0
 // @author       Theodoros OhYeah (enigma9q), ChatGPT, Codex & Antigravity
-// @description  Shows Epic, GOG and Amazon Games ownership on Steam and GG.deals
+// @description  Shows cross-store game ownership on Steam, Epic, GOG, Amazon Games and GG.deals
 // @match        https://store.steampowered.com/*
+// @match        https://steamcommunity.com/my/games/*
+// @match        https://steamcommunity.com/profiles/*/games/*
+// @match        https://steamcommunity.com/id/*/games/*
 // @match        https://accounts.epicgames.com/account/*
 // @match        https://www.epicgames.com/account/*
 // @match        https://store.epicgames.com/*
@@ -31,6 +34,7 @@
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
 // @grant        GM_registerMenuCommand
+// @connect      api.steampowered.com
 // @connect      accounts.epicgames.com
 // @connect      www.epicgames.com
 // @connect      embed.gog.com
@@ -49,6 +53,12 @@
     const AMAZON_LIBRARY_KEY = 'amazonGamesOwnershipLibrary';
     const AMAZON_SYNC_TIME_KEY = 'amazonGamesOwnershipSyncTime';
     const AMAZON_REGION_KEY = 'amazonGamesOwnershipRegion';
+    const STEAM_LIBRARY_KEY = 'steamOwnershipLibrary';
+    const STEAM_SYNC_TIME_KEY = 'steamOwnershipSyncTime';
+    const STEAM_SYNC_MODE_KEY = 'steamOwnershipSyncMode';
+    const STEAM_API_KEY_KEY = 'steamOwnershipApiKey';
+    const STEAM_ID_KEY = 'steamOwnershipSteamId';
+    const STEAM_API_LAST_REQUEST_KEY = 'steamOwnershipApiLastRequest';
 
     const CACHE_DURATION = 7 * 24 * 60 * 60 * 1000;
 
@@ -83,9 +93,11 @@
     const GG_DEALS_BADGES_CLASS = 'steam-gg-deals-ownership-badges';
     const GG_DEALS_OWNERSHIP_ROW_CLASS = 'steam-gg-deals-ownership-row';
     const AMAZON_CARD_BADGE_CLASS = 'steam-amazon-card-badge';
+    const STEAM_CARD_BADGE_CLASS = 'steam-steam-card-badge';
 
     let originalSteamTitle = null;
     let activeCardBadgeTooltip = null;
+    let lastSteamApiRequestAt = 0;
 
     function closeCardBadgeTooltip() {
         if (!activeCardBadgeTooltip) return;
@@ -177,6 +189,11 @@
         return location.hostname === 'store.steampowered.com';
     }
 
+    function isSteamCommunityGamesPage() {
+        return location.hostname === 'steamcommunity.com' &&
+            /^\/(?:my|profiles\/\d+|id\/[^/]+)\/games\/?$/i.test(location.pathname);
+    }
+
     function isGgDealsPage() {
         return location.hostname === 'gg.deals' || location.hostname === 'www.gg.deals';
     }
@@ -186,6 +203,14 @@
             isAmazonCollectionHost(location.hostname) &&
             /^\/claims\/my-collection\/?$/.test(location.pathname)
         );
+    }
+
+    function getCurrentStorePlatform() {
+        if (isSteamPage()) return 'steam';
+        if (isEpicPage()) return 'epic';
+        if (isGogPage()) return 'gog';
+        if (isAmazonGamesPage()) return 'amazon';
+        return null;
     }
 
     function isAmazonCollectionHost(hostname) {
@@ -514,6 +539,350 @@
     function findAmazonOwnedMatches(comparisonTitle) {
         if (!isAmazonCacheValid()) return [];
         return findLibraryMatches(getAmazonLibrary(), comparisonTitle);
+    }
+
+    function getSteamLibrary() {
+        const library = GM_getValue(STEAM_LIBRARY_KEY, []);
+        return Array.isArray(library) ? library : [];
+    }
+
+    function getSteamSyncTime() {
+        return GM_getValue(STEAM_SYNC_TIME_KEY, 0);
+    }
+
+    function isSteamCacheValid() {
+        const library = getSteamLibrary();
+        const syncTime = getSteamSyncTime();
+        return library.length > 0 && syncTime > 0 && Date.now() - syncTime <= CACHE_DURATION;
+    }
+
+    function findSteamOwnedMatches(comparisonTitle) {
+        if (!isSteamCacheValid()) return [];
+        return findLibraryMatches(getSteamLibrary(), comparisonTitle);
+    }
+
+    function getSteamSyncMode() {
+        return GM_getValue(STEAM_SYNC_MODE_KEY, '');
+    }
+
+    function openSteamSyncSettingsDialog(onSave) {
+        if (document.getElementById('steam-library-settings-dialog')) return;
+        const overlay = document.createElement('div');
+        overlay.id = 'steam-library-settings-dialog';
+        overlay.style.cssText = 'position:fixed;inset:0;z-index:1000002;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(0,0,0,.65);font:14px/1.45 Arial,sans-serif;';
+        const panel = document.createElement('div');
+        panel.style.cssText = 'width:min(460px,100%);padding:20px;border:1px solid #48647a;border-radius:8px;background:#171d25;color:#e1e8ee;box-shadow:0 12px 40px rgba(0,0,0,.6);';
+
+        const heading = document.createElement('div');
+        heading.textContent = 'Steam ownership sync';
+        heading.style.cssText = 'font-size:18px;font-weight:700;margin-bottom:8px;';
+        const description = document.createElement('div');
+        description.textContent = 'Choose how to read your Steam games library. Your synced game names are stored in Tampermonkey storage.';
+        description.style.cssText = 'color:#b8c4d0;margin-bottom:14px;';
+
+        const mode = document.createElement('select');
+        mode.style.cssText = 'width:100%;padding:9px;border:1px solid #52687b;border-radius:4px;background:#202a35;color:#fff;';
+        mode.innerHTML = '<option value="">Select a sync method</option><option value="session">Signed-in Steam session (no API key)</option><option value="api">Steam Web API key</option>';
+        mode.value = getSteamSyncMode();
+
+        const apiFields = document.createElement('div');
+        apiFields.style.cssText = 'display:none;margin-top:10px;';
+        const keyInput = document.createElement('input');
+        keyInput.type = 'password';
+        keyInput.autocomplete = 'off';
+        keyInput.placeholder = 'Steam Web API key';
+        keyInput.value = GM_getValue(STEAM_API_KEY_KEY, '');
+        keyInput.style.cssText = 'width:100%;box-sizing:border-box;margin-bottom:8px;padding:9px;border:1px solid #52687b;border-radius:4px;background:#202a35;color:#fff;';
+        const steamIdInput = document.createElement('input');
+        steamIdInput.type = 'text';
+        steamIdInput.autocomplete = 'off';
+        steamIdInput.placeholder = 'SteamID64 or Steam profile URL';
+        steamIdInput.value = GM_getValue(STEAM_ID_KEY, '');
+        steamIdInput.style.cssText = 'width:100%;box-sizing:border-box;padding:9px;border:1px solid #52687b;border-radius:4px;background:#202a35;color:#fff;';
+        const apiNote = document.createElement('div');
+        apiNote.textContent = 'The key is kept locally and sent only to api.steampowered.com. API sync waits at least 1 second between requests.';
+        apiNote.style.cssText = 'color:#9eacba;font-size:12px;margin-top:7px;';
+        const keyHelp = document.createElement('a');
+        keyHelp.href = 'https://steamcommunity.com/dev/apikey';
+        keyHelp.target = '_blank';
+        keyHelp.rel = 'noopener noreferrer';
+        keyHelp.textContent = 'Get a Steam Web API key';
+        keyHelp.style.cssText = 'display:inline-block;margin-top:7px;color:#66c0f4;';
+        apiFields.append(keyInput, steamIdInput, apiNote, keyHelp);
+
+        const sessionNote = document.createElement('div');
+        sessionNote.textContent = 'After saving, open your Steam profile’s Games page and use the Sync Steam library button there.';
+        sessionNote.style.cssText = 'color:#9eacba;font-size:12px;margin-top:9px;';
+        const error = document.createElement('div');
+        error.style.cssText = 'min-height:18px;margin-top:8px;color:#ff8c8c;font-size:12px;';
+        const actions = document.createElement('div');
+        actions.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:12px;';
+        const cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.textContent = 'Cancel';
+        const save = document.createElement('button');
+        save.type = 'button';
+        save.textContent = 'Save';
+        [cancel, save].forEach(button => {
+            button.style.cssText = 'padding:8px 12px;border:1px solid #52687b;border-radius:4px;background:#273441;color:#eee;cursor:pointer;';
+        });
+        save.style.cssText += 'border-color:#66c0f4;background:#66c0f4;color:#10202c;font-weight:700;';
+
+        function updateMode() {
+            apiFields.style.display = mode.value === 'api' ? 'block' : 'none';
+            sessionNote.style.display = mode.value === 'session' ? 'block' : 'none';
+            error.textContent = '';
+        }
+        mode.addEventListener('change', updateMode);
+        updateMode();
+        cancel.addEventListener('click', () => overlay.remove());
+        save.addEventListener('click', function () {
+            const selectedMode = mode.value;
+            if (!selectedMode) {
+                error.textContent = 'Choose one of the two Steam library sync methods.';
+                return;
+            }
+            if (selectedMode === 'api' && (!keyInput.value.trim() || !steamIdInput.value.trim())) {
+                error.textContent = 'Enter both your Steam Web API key and SteamID64 or profile URL.';
+                return;
+            }
+            GM_setValue(STEAM_SYNC_MODE_KEY, selectedMode);
+            if (selectedMode === 'api') {
+                GM_setValue(STEAM_API_KEY_KEY, keyInput.value.trim());
+                GM_setValue(STEAM_ID_KEY, steamIdInput.value.trim());
+            } else {
+                GM_setValue(STEAM_API_KEY_KEY, '');
+                GM_setValue(STEAM_ID_KEY, '');
+            }
+            overlay.remove();
+            if (typeof onSave === 'function') onSave(selectedMode);
+        });
+
+        actions.append(cancel, save);
+        panel.append(heading, description, mode, apiFields, sessionNote, error, actions);
+        overlay.appendChild(panel);
+        overlay.addEventListener('click', event => {
+            if (event.target === overlay) overlay.remove();
+        });
+        document.body.appendChild(overlay);
+    }
+
+    function waitForSteamApiSlot() {
+        const lastRequest = Math.max(lastSteamApiRequestAt, GM_getValue(STEAM_API_LAST_REQUEST_KEY, 0));
+        const delay = Math.max(0, 1000 - (Date.now() - lastRequest));
+        return new Promise(resolve => setTimeout(function () {
+            lastSteamApiRequestAt = Date.now();
+            GM_setValue(STEAM_API_LAST_REQUEST_KEY, lastSteamApiRequestAt);
+            resolve();
+        }, delay));
+    }
+
+    async function requestSteamApi(url) {
+        await waitForSteamApiSlot();
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url,
+                timeout: 30000,
+                onload: response => {
+                    if (response.status < 200 || response.status >= 300) {
+                        reject(new Error(`Steam Web API returned HTTP ${response.status}.`));
+                        return;
+                    }
+                    try {
+                        resolve(JSON.parse(response.responseText));
+                    } catch (_) {
+                        reject(new Error('Steam returned an unreadable Web API response.'));
+                    }
+                },
+                onerror: () => reject(new Error('Could not reach api.steampowered.com.')),
+                ontimeout: () => reject(new Error('Steam Web API request timed out.'))
+            });
+        });
+    }
+
+    function parseSteamId(value) {
+        const directId = String(value || '').match(/\b\d{17}\b/);
+        if (directId) return { steamId: directId[0] };
+        try {
+            const url = new URL(value);
+            const vanity = url.pathname.match(/^\/id\/([^/]+)/i);
+            if (vanity) return { vanity: vanity[1] };
+        } catch (_) { }
+        const vanityText = String(value || '').trim().match(/^[A-Za-z0-9_-]+$/);
+        return vanityText ? { vanity: vanityText[0] } : null;
+    }
+
+    async function syncSteamLibraryFromApi() {
+        const apiKey = GM_getValue(STEAM_API_KEY_KEY, '');
+        const idInput = GM_getValue(STEAM_ID_KEY, '');
+        if (!apiKey || !idInput) throw new Error('Configure your Steam Web API key and Steam profile first.');
+        const parsedId = parseSteamId(idInput);
+        if (!parsedId) throw new Error('Use a SteamID64 or a Steam profile URL.');
+        let steamId = parsedId.steamId;
+        if (!steamId) {
+            const vanityUrl = new URL('https://api.steampowered.com/ISteamUser/ResolveVanityURL/v1/');
+            vanityUrl.searchParams.set('key', apiKey);
+            vanityUrl.searchParams.set('vanityurl', parsedId.vanity);
+            const vanityResult = await requestSteamApi(vanityUrl.href);
+            steamId = vanityResult.response && vanityResult.response.success === 1
+                ? vanityResult.response.steamid
+                : '';
+            if (!steamId) throw new Error('Steam could not resolve that custom profile URL.');
+        }
+
+        const gamesUrl = new URL('https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/');
+        gamesUrl.searchParams.set('key', apiKey);
+        gamesUrl.searchParams.set('steamid', steamId);
+        gamesUrl.searchParams.set('include_appinfo', 'true');
+        gamesUrl.searchParams.set('include_played_free_games', 'true');
+        const result = await requestSteamApi(gamesUrl.href);
+        const games = result.response && Array.isArray(result.response.games) ? result.response.games : null;
+        if (!games) throw new Error('Steam returned no visible game list. Check the profile’s game-details privacy setting and SteamID.');
+        const library = games.filter(game => game && game.name).map(game => ({
+            original: game.name,
+            normalized: normalizeTitle(game.name),
+            edition: detectEditionName(game.name, getComparisonTitle(game.name))
+        }));
+        if (library.length === 0) throw new Error('Steam returned an empty library. Check the profile’s game-details privacy setting.');
+        GM_setValue(STEAM_LIBRARY_KEY, library);
+        GM_setValue(STEAM_SYNC_TIME_KEY, Date.now());
+        return library;
+    }
+
+    function getSteamSessionLibraryRows() {
+        const rows = document.querySelectorAll('#games_list_rows .gameListRow, .gameListRow, [data-appid], #games_list_rows a[href*="/app/"]');
+        const games = new Map();
+        rows.forEach(row => {
+            const titleSelector = '.gameListRowItemName, .game_name, [class*="gameListRowItemName"], [data-app-name]';
+            const titleElement = row.matches(titleSelector) ? row : row.querySelector(titleSelector);
+            const title = cleanCardText((titleElement && (titleElement.getAttribute('data-app-name') || titleElement.textContent)) ||
+                row.getAttribute('data-app-name') || row.getAttribute('aria-label') || row.getAttribute('title') ||
+                getTitleFromSlug(row.getAttribute('href')));
+            if (title) games.set(getLibraryKey(title), {
+                original: title,
+                normalized: normalizeTitle(title),
+                edition: detectEditionName(title, getComparisonTitle(title))
+            });
+        });
+        return [...games.values()];
+    }
+
+    function getSteamLoadMoreControl() {
+        const candidates = document.querySelectorAll('button, a, [role="button"], [class*="loadMore"], [class*="load_more"]');
+        return [...candidates].find(element => {
+            const text = cleanCardText(element.textContent || element.getAttribute('aria-label') || element.getAttribute('title'));
+            const style = window.getComputedStyle(element);
+            return text && /^(?:load|show|see)\s+(?:\d+\s+)?more(?:\s+games)?$/i.test(text) &&
+                style.display !== 'none' && style.visibility !== 'hidden' && !element.disabled;
+        }) || null;
+    }
+
+    async function syncSteamLibraryFromSessionPage(onProgress) {
+        if (!isSteamCommunityGamesPage()) throw new Error('Open your signed-in Steam profile’s Games page first.');
+        const originalScrollY = window.scrollY;
+        let previousCount = -1;
+        let stablePasses = 0;
+        for (let pass = 0; pass < 100 && stablePasses < 3; pass++) {
+            const count = getSteamSessionLibraryRows().length;
+            if (onProgress) onProgress(count);
+            stablePasses = count === previousCount ? stablePasses + 1 : 0;
+            previousCount = count;
+            if (stablePasses >= 3) break;
+            const loadMore = getSteamLoadMoreControl();
+            if (loadMore) loadMore.click();
+            else window.scrollTo(0, document.body.scrollHeight);
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        window.scrollTo(0, originalScrollY);
+        const library = getSteamSessionLibraryRows();
+        if (library.length === 0) throw new Error('No Steam game rows were found. Open the All Games list while signed in and retry.');
+        GM_setValue(STEAM_LIBRARY_KEY, library);
+        GM_setValue(STEAM_SYNC_TIME_KEY, Date.now());
+        return library;
+    }
+
+    function startSteamLibrarySync(onStatus) {
+        const mode = getSteamSyncMode();
+        if (!mode) {
+            openSteamSyncSettingsDialog(() => startSteamLibrarySync(onStatus));
+            return;
+        }
+        if (mode === 'api') {
+            syncSteamLibraryFromApi().then(library => {
+                if (onStatus) onStatus(`Saved ${library.length} Steam games.`);
+            }).catch(error => {
+                if (onStatus) onStatus(error.message || 'Steam sync failed.');
+            });
+            return;
+        }
+        if (isSteamCommunityGamesPage()) {
+            syncSteamLibraryFromSessionPage(count => {
+                if (onStatus) onStatus(`Loaded ${count} Steam games…`);
+            }).then(library => {
+                if (onStatus) onStatus(`Saved ${library.length} Steam games.`);
+            }).catch(error => {
+                if (onStatus) onStatus(error.message || 'Steam sync failed.');
+            });
+            return;
+        }
+        window.open('https://steamcommunity.com/my/games/?tab=all', '_blank', 'noopener,noreferrer');
+        if (onStatus) onStatus('Opened your Steam Games page. Use Sync Steam library there.');
+    }
+
+    function registerSteamSyncMenuCommands() {
+        if (typeof GM_registerMenuCommand !== 'function') return;
+        GM_registerMenuCommand('Configure Steam ownership sync', () => openSteamSyncSettingsDialog());
+        GM_registerMenuCommand('Sync Steam library', () => startSteamLibrarySync(message => window.alert(message)));
+    }
+
+    function createSteamSessionSyncUI() {
+        if (document.getElementById('steam-session-library-sync') || !document.body) return;
+        const panel = document.createElement('div');
+        panel.id = 'steam-session-library-sync';
+        panel.style.cssText = 'position:fixed;right:20px;bottom:20px;z-index:999999;width:min(300px,calc(100vw - 40px));padding:12px;border:1px solid #45657d;border-radius:6px;background:#171d25;color:#e1e8ee;box-shadow:0 8px 24px rgba(0,0,0,.55);font:12px/1.45 Arial,sans-serif;';
+        const title = document.createElement('div');
+        title.textContent = 'Steam Ownership';
+        title.style.cssText = 'font-size:14px;font-weight:700;margin-bottom:5px;';
+        const status = document.createElement('div');
+        status.textContent = `Saved games: ${getSteamLibrary().length} · Last sync: ${formatSyncDate(getSteamSyncTime())}`;
+        status.style.cssText = 'color:#b8c4d0;margin-bottom:9px;';
+        const sync = document.createElement('button');
+        sync.type = 'button';
+        sync.textContent = 'Sync Steam library';
+        sync.style.cssText = 'padding:7px 10px;border:0;border-radius:4px;background:#66c0f4;color:#10202c;font-weight:700;cursor:pointer;';
+        sync.addEventListener('click', function () {
+            sync.disabled = true;
+            sync.textContent = 'Loading library…';
+            const finished = message => {
+                status.textContent = message;
+                sync.disabled = false;
+                sync.textContent = 'Sync Steam library';
+            };
+            if (!getSteamSyncMode()) {
+                openSteamSyncSettingsDialog(() => {
+                    sync.disabled = false;
+                    sync.textContent = 'Sync Steam library';
+                    sync.click();
+                });
+                sync.disabled = false;
+                sync.textContent = 'Sync Steam library';
+            } else if (getSteamSyncMode() === 'api') {
+                syncSteamLibraryFromApi().then(library => finished(`Saved ${library.length} Steam games.`))
+                    .catch(error => finished(error.message || 'Steam sync failed.'));
+            } else {
+                syncSteamLibraryFromSessionPage(count => { status.textContent = `Loading Steam games… ${count} found`; })
+                    .then(library => finished(`Saved ${library.length} Steam games.`))
+                    .catch(error => finished(error.message || 'Steam sync failed.'));
+            }
+        });
+        const configure = document.createElement('button');
+        configure.type = 'button';
+        configure.textContent = 'Change sync method';
+        configure.style.cssText = 'margin-left:8px;padding:7px 10px;border:1px solid #52687b;border-radius:4px;background:#273441;color:#e1e8ee;cursor:pointer;';
+        configure.addEventListener('click', () => openSteamSyncSettingsDialog());
+        panel.append(title, status, sync, configure);
+        document.body.appendChild(panel);
     }
 
     function collectAmazonGamesFromPage(existingKeys = null) {
@@ -929,6 +1298,15 @@
         if (typeof GM_registerMenuCommand !== 'function') return;
         GM_registerMenuCommand('Set Amazon Games region', function () {
             openAmazonRegionDialog();
+        });
+    }
+
+    function scanAmazonCollectionBadges() {
+        if (!isAmazonGamesPage()) return;
+        document.querySelectorAll('[data-a-target="accordion_entry"]').forEach(function (entry) {
+            const titleElement = entry.querySelector('h3[title], h3');
+            const title = titleElement && (titleElement.getAttribute('title') || titleElement.textContent.trim());
+            if (titleElement && title) addCrossStoreBadgesBesideTitle(titleElement, title);
         });
     }
 
@@ -1862,6 +2240,11 @@
             <div style="font-weight: bold; margin-bottom: 6px; font-size: 11px; text-transform: uppercase; color: #8f98a0; letter-spacing: 0.5px;">
                 Sync to Database
             </div>
+            <button type="button" data-a-target="steam-library-sync" style="display:flex;width:100%;align-items:center;justify-content:space-between;padding:6px 8px;margin-bottom:6px;border:1px solid #45657d;border-radius:4px;background:#1c2c39;color:#fff;text-align:left;cursor:pointer;">
+                <span><span style="display:block;font-weight:600;color:#9bd8ff;">Sync Steam library</span><span style="display:block;font-size:10px;color:#8f98a0;margin-top:2px;">Last: ${formatSyncDate(getSteamSyncTime())} (${getSteamLibrary().length} games)</span></span>
+                <span style="font-size:14px;color:#66c0f4;">↻</span>
+            </button>
+            <button type="button" data-a-target="configure-steam-sync" style="margin-bottom:6px;padding:2px 0;border:0;background:none;color:#9bd8ff;font:11px Arial,sans-serif;text-decoration:underline;cursor:pointer;">Choose Steam sync method</button>
             <a href="${EPIC_TRANSACTIONS_URL}" target="_blank" rel="noopener noreferrer" style="
                 display: flex;
                 align-items: center;
@@ -1936,6 +2319,16 @@
                 event.preventDefault();
                 event.stopPropagation();
                 openAmazonRegionDialog();
+            });
+        dropdownMenu.querySelector('[data-a-target="steam-library-sync"]')
+            ?.addEventListener('click', function () {
+                startSteamLibrarySync(message => window.alert(message));
+            });
+        dropdownMenu.querySelector('[data-a-target="configure-steam-sync"]')
+            ?.addEventListener('click', function (event) {
+                event.preventDefault();
+                event.stopPropagation();
+                openSteamSyncSettingsDialog();
             });
 
         function toggleDropdown(e) {
@@ -2441,9 +2834,11 @@
             ? EPIC_CARD_BADGE_CLASS
             : platform === 'gog'
                 ? GOG_CARD_BADGE_CLASS
-                : AMAZON_CARD_BADGE_CLASS;
+                : platform === 'steam'
+                    ? STEAM_CARD_BADGE_CLASS
+                    : AMAZON_CARD_BADGE_CLASS;
 
-        const label = platform === 'epic' ? 'Epic' : platform === 'gog' ? 'GOG' : 'Amazon';
+        const label = platform === 'epic' ? 'Epic' : platform === 'gog' ? 'GOG' : platform === 'steam' ? 'Steam' : 'Amazon';
         badge.textContent = label;
         badge.title = tooltip;
         badge.setAttribute('role', 'button');
@@ -2456,7 +2851,7 @@
             questionMark.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:12px;height:12px;margin-left:3px;border:1px solid currentColor;border-radius:50%;font-size:9px;line-height:1;font-weight:800;';
             badge.appendChild(questionMark);
         }
-        const color = platform === 'amazon' ? '#f0a42b' : '#67d46a';
+        const color = platform === 'amazon' ? '#f0a42b' : platform === 'steam' ? '#66c0f4' : '#67d46a';
         const textColor = platform === 'amazon' ? '#201407' : '#1b2838';
 
         badge.style.cssText = `
@@ -2507,7 +2902,9 @@
             ? 'Epic Games Store'
             : platform === 'gog'
                 ? 'GOG'
-                : 'Amazon Games';
+                : platform === 'steam'
+                    ? 'Steam'
+                    : 'Amazon Games';
         const versionLines = (matches || []).map(match => {
             const title = match.original || fallbackTitle || 'Unknown title';
             const version = match.edition || 'edition not specified in the saved store title';
@@ -2536,10 +2933,12 @@
 
     function getCrossStoreMatches(title) {
         const comparisonTitle = getComparisonTitle(title);
+        const currentStore = getCurrentStorePlatform();
         return {
-            epic: isEpicCacheValid() ? findEpicOwnedMatches(comparisonTitle) : [],
-            gog: isGogCacheValid() ? findGogOwnedMatches(comparisonTitle) : [],
-            amazon: isAmazonCacheValid() ? findAmazonOwnedMatches(comparisonTitle) : []
+            steam: currentStore !== 'steam' && isSteamCacheValid() ? findSteamOwnedMatches(comparisonTitle) : [],
+            epic: currentStore !== 'epic' && isEpicCacheValid() ? findEpicOwnedMatches(comparisonTitle) : [],
+            gog: currentStore !== 'gog' && isGogCacheValid() ? findGogOwnedMatches(comparisonTitle) : [],
+            amazon: currentStore !== 'amazon' && isAmazonCacheValid() ? findAmazonOwnedMatches(comparisonTitle) : []
         };
     }
 
@@ -2548,7 +2947,7 @@
         group.className = className;
         group.style.cssText = 'display:inline-flex;align-items:center;gap:4px;pointer-events:auto;';
 
-        [['epic', matches.epic], ['gog', matches.gog], ['amazon', matches.amazon]].forEach(function ([platform, ownedMatches]) {
+        [['steam', matches.steam || []], ['epic', matches.epic], ['gog', matches.gog], ['amazon', matches.amazon]].forEach(function ([platform, ownedMatches]) {
             if (!ownedMatches.length) return;
             const badge = createCardBadge(
                 platform,
@@ -2594,6 +2993,75 @@
         return true;
     }
 
+    function getStoreListingCard(link, hrefPattern) {
+        const cardSelector = [
+            '[data-testid*="product"]', '[data-testid*="tile"]', '[data-game-title]',
+            '[class*="ProductCard"]', '[class*="product-card"]', '[class*="productCard"]',
+            '[class*="ProductTile"]', '[class*="product-tile"]', '[class*="game-card"]',
+            '[class*="GameCard"]', '[class*="catalog-item"]'
+        ].join(', ');
+        let card = link.closest(cardSelector);
+        if (card && card.querySelector('img')) return card;
+
+        let ancestor = link.parentElement;
+        for (let depth = 0; ancestor && depth < 10; depth++, ancestor = ancestor.parentElement) {
+            const productLinks = [...ancestor.querySelectorAll('a[href]')]
+                .filter(candidate => hrefPattern.test(new URL(candidate.href, location.href).pathname));
+            const productPaths = new Set(productLinks.map(candidate => new URL(candidate.href, location.href).pathname));
+            if (productPaths.size === 1 && ancestor.querySelector('img')) return ancestor;
+        }
+        return null;
+    }
+
+    function getStoreListingTitle(card, link, platform) {
+        const fromData = card.getAttribute('data-game-title') ||
+            card.getAttribute('data-game-name') ||
+            card.getAttribute('aria-label');
+        if (cleanCardText(fromData)) return cleanCardText(fromData);
+
+        const titleElement = card.querySelector('h2, h3, h4, [class*="product-title"], [class*="ProductTitle"], [class*="game-title"], [class*="GameTitle"], [class*="title"]');
+        if (titleElement && cleanCardText(titleElement.textContent)) return cleanCardText(titleElement.textContent);
+
+        const imageAlt = card.querySelector('img')?.getAttribute('alt');
+        if (cleanCardText(imageAlt)) return cleanCardText(imageAlt);
+        const linkTitle = getCardTitleFromAttributes(link) || cleanCardText(link.textContent);
+        if (linkTitle) return linkTitle;
+
+        const pattern = platform === 'epic' ? /\/p\/([^/]+)/i : /\/game\/([^/]+)/i;
+        const slug = new URL(link.href, location.href).pathname.match(pattern);
+        if (!slug) return null;
+        try {
+            return cleanCardText(decodeURIComponent(slug[1]).replace(/[-_]/g, ' '));
+        } catch (_) {
+            return cleanCardText(slug[1].replace(/[-_]/g, ' '));
+        }
+    }
+
+    function scanCrossStoreImageCards() {
+        const host = location.hostname;
+        let platform = '';
+        let hrefPattern = null;
+        if (host === 'store.epicgames.com') {
+            platform = 'epic';
+            hrefPattern = /\/p\/[^/]+/i;
+        } else if (host === 'www.gog.com' || host === 'gog.com' || host === 'embed.gog.com') {
+            platform = 'gog';
+            hrefPattern = /\/game\/[^/]+/i;
+        }
+        if (!platform) return;
+
+        const seenCards = new Set();
+        document.querySelectorAll('a[href]').forEach(function (link) {
+            if (!hrefPattern.test(new URL(link.href, location.href).pathname)) return;
+            if (link.closest('.steam-cross-store-image-badges, .steam-cross-store-inline-badges')) return;
+            const card = getStoreListingCard(link, hrefPattern);
+            if (!card || seenCards.has(card)) return;
+            seenCards.add(card);
+            const title = getStoreListingTitle(card, link, platform);
+            if (title && title.length < 150) addCrossStoreBadgesOverImage(card, title);
+        });
+    }
+
     function scanCrossStoreSearchResults() {
         const pageHost = location.hostname;
         let gameLinks = [];
@@ -2623,8 +3091,17 @@
         if (existing) existing.remove();
 
         const matches = getCrossStoreMatches(title);
-        const group = createCrossStoreBadgeGroup(title, matches, 'steam-store-page-owned-badges');
-        if (!group) return false;
+        let group = createCrossStoreBadgeGroup(title, matches, 'steam-store-page-owned-badges');
+        if (!group) {
+            group = document.createElement('span');
+            group.className = 'steam-store-page-owned-badges';
+            const notOwnedBadge = document.createElement('span');
+            notOwnedBadge.textContent = '✕';
+            notOwnedBadge.title = 'No match found in your other synced store libraries.';
+            notOwnedBadge.setAttribute('aria-label', notOwnedBadge.title);
+            notOwnedBadge.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:20px;padding:0 6px;border:1px solid rgba(229,115,115,.45);border-radius:3px;background:rgba(229,115,115,.18);color:#d9534f;font:900 12px Arial,sans-serif;box-sizing:border-box;';
+            group.appendChild(notOwnedBadge);
+        }
 
         const container = document.createElement('span');
         container.id = 'steam-ownership-indicator';
@@ -2672,7 +3149,10 @@
     function scanStoreProductPage(platform) {
         scanCrossStoreSearchResults();
         const isProduct = platform === 'gog' ? isGogProductPage() : isEpicProductPage();
-        if (!isProduct) return;
+        if (!isProduct) {
+            scanCrossStoreImageCards();
+            return;
+        }
         const titleElement = getStoreProductTitleElement(platform);
         const title = getStoreProductTitle(titleElement);
         if (titleElement && title) renderStorePageOwnedIndicator(titleElement, title);
@@ -2980,6 +3460,9 @@
         const epicMatches = isEpicCacheValid()
             ? findEpicOwnedMatches(comparisonTitle)
             : [];
+        const steamMatches = isSteamCacheValid()
+            ? findSteamOwnedMatches(comparisonTitle)
+            : [];
         const gogMatches = isGogCacheValid()
             ? findGogOwnedMatches(comparisonTitle)
             : [];
@@ -2987,13 +3470,22 @@
             ? findAmazonOwnedMatches(comparisonTitle)
             : [];
 
-        if (epicMatches.length === 0 && gogMatches.length === 0 && amazonMatches.length === 0) return;
+        if (epicMatches.length === 0 && steamMatches.length === 0 && gogMatches.length === 0 && amazonMatches.length === 0) return;
 
         const badgeGroup = document.createElement('span');
         badgeGroup.className = GG_DEALS_BADGES_CLASS;
         badgeGroup.style.cssText = options.withAnchor
             ? 'display:inline-flex;align-items:center;gap:3px;margin-left:0;vertical-align:middle;'
             : 'display:inline-flex;align-items:center;gap:3px;margin-left:6px;vertical-align:middle;';
+
+        if (steamMatches.length > 0) {
+            badgeGroup.appendChild(createCardBadge(
+                'steam',
+                'owned',
+                createOwnershipBadgeTooltip('steam', steamMatches, null, title),
+                getEditionMatchWarning(title, steamMatches)
+            ));
+        }
 
         if (epicMatches.length > 0) {
             badgeGroup.appendChild(createCardBadge(
@@ -3850,6 +4342,7 @@
     }
 
     registerAmazonRegionMenuCommand();
+    registerSteamSyncMenuCommands();
 
     console.log(
         '[Steam → Epic + GOG] Script loaded:',
@@ -3961,13 +4454,28 @@
         } else {
             window.addEventListener('DOMContentLoaded', observeGgDealsPage, { once: true });
         }
+    } else if (isSteamCommunityGamesPage()) {
+        const initSteamSession = () => createSteamSessionSyncUI();
+        if (document.body) initSteamSession();
+        else window.addEventListener('DOMContentLoaded', initSteamSession, { once: true });
     } else if (isAmazonGamesPage()) {
         const initAmazon = function () {
             createAmazonSyncUI();
-            const observer = new MutationObserver(function () {
+            scanAmazonCollectionBadges();
+            let scanTimer = null;
+            const observer = new MutationObserver(function (mutations) {
                 if (!document.getElementById('steam-amazon-sync-wrapper')) {
                     createAmazonSyncUI();
                 }
+                const hasGameContentChange = mutations.some(mutation =>
+                    [...mutation.addedNodes].some(node =>
+                        node.nodeType !== Node.ELEMENT_NODE ||
+                        !node.matches?.('.steam-cross-store-inline-badges, #steam-amazon-sync-wrapper')
+                    )
+                );
+                if (!hasGameContentChange) return;
+                clearTimeout(scanTimer);
+                scanTimer = setTimeout(scanAmazonCollectionBadges, 250);
             });
             if (document.body) {
                 observer.observe(document.body, { childList: true, subtree: true });

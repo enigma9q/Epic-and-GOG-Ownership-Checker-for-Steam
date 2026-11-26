@@ -1,6 +1,6 @@
 # Epic and GOG Ownership Checker for Steam
 
-A Tampermonkey userscript that shows Epic Games Store, GOG, and Amazon Games ownership on Steam and GG.deals.
+A Tampermonkey userscript that shows Steam, Epic Games Store, GOG, and Amazon Games ownership across Steam, Epic, GOG, Amazon Games, and GG.deals.
 
 ## Features
 
@@ -15,12 +15,14 @@ A Tampermonkey userscript that shows Epic Games Store, GOG, and Amazon Games own
 - **Smart Incremental Sync (Quick Sync)**: Fast incremental sync mode that stops scanning when it reaches previously synced purchases, merging newly acquired games automatically.
 - **Full Sync**: Option to perform a full scan of all library pages whenever needed.
 - **Header-Integrated Sync Buttons**: Adds a sleek **`Sync to Steam`** button next to **Purchases** on Epic Games Store and **My Collection** on GOG, with a compact dropdown popup displaying owned titles, last purchase, and exact last sync timestamp.
-- **Amazon Games Support**: Syncs titles marked “Delivered to your Amazon Games library” (or with a crown marker) from the Amazon Games collection page and stores ownership locally.
-- **Steam Cards Support**: Shows `Epic`, `GOG`, and `Amazon` badges on search results, recommendations, and similar-game cards. Click a badge to view owned version titles; a `?` marks editions the store entry does not confirm.
-- **GG.deals Support**: Shows ownership badges across GG.deals game listings, search results, game pages, and wishlist entries. Listing badges sit on the game artwork; search results show them beside the title.
-- **Epic and GOG Game Pages**: Shows an `Owned:` indicator beside game titles when that game matches one of your synced libraries. Product pages show the ownership indicator without the library sync button.
+- **Amazon Games Support**: Syncs titles marked “Delivered to your Amazon Games library” (or with a crown marker) from the Amazon Games collection page and stores ownership locally. Other-store badges can appear beside collection titles, while the Amazon badge is hidden there.
+- **Steam Cards Support**: Shows `Epic`, `GOG`, and `Amazon` ownership badges on search results, recommendations, and similar-game cards. Click a badge to view owned version titles; a `?` marks editions the store entry does not confirm.
+- **Steam Ownership Sync**: Sync Steam games using either your signed-in Steam profile games page or the Steam Web API. Synced Steam badges appear on other supported stores.
+- **Hide Current Store Badge**: On a store’s own pages, the script hides that store’s badge and shows matches from the other synced libraries. GG.deals can show badges from all supported stores.
+- **GG.deals Support**: Shows ownership badges for Steam, Epic, GOG, and Amazon across GG.deals game listings, search results, game pages, and wishlist entries. Listing badges sit on the game artwork; search results show them beside the title.
+- **Epic and GOG Support**: Adds cross-store ownership badges over game artwork on browse/listing pages and beside matching search suggestions. Product pages show an `Owned:` indicator beside the title, excluding that page’s own store badge and showing `✕` if no other synced library matches. Product pages do not show a library sync button.
 - **Edition-Preserving Sync**: Stores distinct editions separately, so the tooltip can list every owned edition and Quick Sync can detect a newly purchased edition of an already owned game.
-- **Local Storage Caching**: Caches all three stores' ownership data locally using Tampermonkey storage.
+- **Local Storage Caching**: Caches all four stores' ownership data locally using Tampermonkey storage.
 - **Privacy Friendly**: Uses your existing store login sessions and does not transmit ownership data to third parties.
 
 ## Installation
@@ -29,21 +31,27 @@ A Tampermonkey userscript that shows Epic Games Store, GOG, and Amazon Games own
 2. Create a new userscript.
 3. Copy `Epic-and-GOG-Ownership-Checker-for-Steam.user.js` into it.
 4. Save the script.
-5. Open Steam or a supported GG.deals game or wishlist page to see ownership badges.
+5. Open Steam, Epic, GOG, Amazon Games, or GG.deals to see ownership badges.
 
 ## Synchronization
 
-1. **Epic Games Store**:
+1. **Steam**:
+   - From a Steam game page, open the `Owned:` dropdown and choose **Choose Steam sync method**.
+   - Select **Signed-in Steam session** to open your Steam profile’s Games page. Click **Sync Steam library** there; the script waits one second between page loads while collecting the list.
+   - Or select **Steam Web API key** and enter your key plus SteamID64 or profile URL. The key is saved in Tampermonkey storage and sent only to Steam. Steam must allow access to your game details for API sync.
+   - Sync again from the Steam dropdown or the userscript manager menu when you want to refresh the saved list.
+
+2. **Epic Games Store**:
    - Open your Epic transactions page: `https://accounts.epicgames.com/account/transactions/purchases`
    - Click the **`Sync to Steam`** button next to the **Purchases** heading.
    - Choose **Quick Sync** (fast incremental) or **Full Sync**.
 
-2. **GOG**:
+3. **GOG**:
    - Open your GOG account page: `https://www.gog.com/account`
    - Click the **`Sync to Steam`** button next to the **My Collection** dropdown.
    - Choose **Quick Sync** (fast incremental) or **Full Sync**.
 
-3. **Amazon Games**:
+4. **Amazon Games**:
    - Open your Amazon Games collection, such as `https://luna.amazon.com.be/claims/my-collection`.
    - On first use, choose your Amazon region. The script remembers it and uses that regional collection URL when you open Amazon Games from Steam.
    - Choose **Other Amazon region…** and enter your Luna collection host if it is not listed.
@@ -56,11 +64,11 @@ You must be logged in to the respective service in your browser. Amazon collecti
 
 ## Privacy
 
-The userscript does not contain or hard-code account IDs, usernames, email addresses, passwords, API keys, authentication tokens, or personal cookies. Ownership data and your selected Amazon region are stored locally in your browser via Tampermonkey storage.
+The userscript does not contain or hard-code account IDs, usernames, email addresses, passwords, API keys, authentication tokens, or personal cookies. Ownership data, your selected Amazon region, and any Steam Web API key you enter are stored locally in your browser via Tampermonkey storage. A Steam API key is sent only to Steam’s Web API when you sync that library.
 
 ## Permissions
 
-The script uses `GM_getValue`, `GM_setValue`, `GM_xmlhttpRequest`, and `GM_registerMenuCommand`.
+The script uses `GM_getValue`, `GM_setValue`, `GM_xmlhttpRequest`, and `GM_registerMenuCommand`, with Steam Web API access to `api.steampowered.com`.
 
 ## License
 
